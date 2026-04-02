@@ -1,0 +1,10 @@
+### oracle OCI 敏感配置 ###
+# 邮件配置
+email_config.conf
+
+# 任务目录
+tasks/
+
+# 实例配置文件
+instance_update.json
+retry_update.sh
