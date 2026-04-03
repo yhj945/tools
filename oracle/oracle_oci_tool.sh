@@ -25,7 +25,9 @@ BOLD='\033[1m'
 # 获取脚本所在目录
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OCI_CONFIG_FILE="$HOME/.oci/config"
-UPDATE_JSON="${SCRIPT_DIR}/instance_update.json"
+UPDATE_INSTANCE_CONFIG="${SCRIPT_DIR}/update_instance_config.json"
+CREATE_INSTANCE_CONFIG="${SCRIPT_DIR}/create_instance_config.json"
+CREATE_INSTANCE_DRAFT_CONFIG="${SCRIPT_DIR}/create_instance_config.draft.json"
 RETRY_SCRIPT="${SCRIPT_DIR}/retry_update.sh"
 TASK_DIR="${SCRIPT_DIR}/tasks"
 EMAIL_CONFIG_FILE="${SCRIPT_DIR}/email_config.conf"
@@ -308,7 +310,7 @@ check_existing_task_for_instance() {
 # 创建新任务
 # 参数: $1=task_type, $2=instance_ocid, $3=target_ocpus, $4=target_memory, $5=retry_interval, $6=skip_check(可选)
 create_background_task() {
-    local task_type="$1"  # direct_update 或 full_update
+    local task_type="$1"  # direct_update_instance 或 full_update_instance
     local instance_ocid="$2"
     local target_ocpus="$3"
     local target_memory="$4"
@@ -408,7 +410,7 @@ EOF
     echo "日志文件: $task_path/task.log"
     echo ""
     echo -e "${CYAN}提示: 任务将在后台持续执行，您可以：${NC}"
-    echo "  - 选择菜单 [9] 查看任务进度"
+    echo "  - 在主菜单进入“管理后台任务”查看任务进度"
     echo "  - 退出此脚本不会影响后台任务"
     echo ""
 }
@@ -478,7 +480,7 @@ exec_background_task() {
         ((attempt++))
         log_info "第 $attempt 次尝试..."
 
-        if [[ "$task_type" == "direct_update" ]]; then
+        if [[ "$task_type" == "direct_update_instance" || "$task_type" == "direct_update" ]]; then
             # 直接更新（不停止实例）
             local result
             result=$(oci compute instance update \
@@ -507,7 +509,7 @@ exec_background_task() {
                 sleep "$retry_interval"
             fi
 
-        elif [[ "$task_type" == "full_update" ]]; then
+        elif [[ "$task_type" == "full_update_instance" || "$task_type" == "full_update" ]]; then
             # 完整更新流程（停止→更新→启动）
 
             # 步骤 1: 停止实例
@@ -609,6 +611,50 @@ exec_background_task() {
     done
 }
 
+get_task_type_label() {
+    case "$1" in
+        direct_update|direct_update_instance) echo "直接更新" ;;
+        full_update|full_update_instance) echo "完整更新" ;;
+        create_instance) echo "创建实例" ;;
+        *) echo "$1" ;;
+    esac
+}
+
+get_task_subject_label() {
+    local task_info="$1"
+    local task_type
+    task_type=$(jq -r '.task_type // ""' "$task_info")
+
+    if [[ "$task_type" == "create_instance" ]]; then
+        jq -r '.display_name // "新实例"' "$task_info"
+    else
+        local instance_ocid
+        instance_ocid=$(jq -r '.instance_ocid // ""' "$task_info")
+        local instance_short="${instance_ocid##*.}"
+        echo "${instance_short:0:20}..."
+    fi
+}
+
+get_task_target_label() {
+    local task_info="$1"
+    local task_type
+    task_type=$(jq -r '.task_type // ""' "$task_info")
+    local target_ocpus target_memory shape
+    target_ocpus=$(jq -r '.target_ocpus // "N/A"' "$task_info")
+    target_memory=$(jq -r '.target_memory // "N/A"' "$task_info")
+    shape=$(jq -r '.shape // ""' "$task_info")
+
+    if [[ "$task_type" == "create_instance" ]]; then
+        if [[ -n "$shape" && "$shape" != "null" ]]; then
+            echo "${shape} / ${target_ocpus} OCPU / ${target_memory} GB"
+        else
+            echo "创建新实例"
+        fi
+    else
+        echo "${target_ocpus} OCPU / ${target_memory} GB"
+    fi
+}
+
 # 列出所有任务
 list_background_tasks() {
     init_task_dir
@@ -633,10 +679,13 @@ list_background_tasks() {
         TASK_IDS[$task_count]="$task_id"
 
         local task_type=$(jq -r '.task_type' "$task_info")
-        local instance_ocid=$(jq -r '.instance_ocid' "$task_info")
-        local target_ocpus=$(jq -r '.target_ocpus' "$task_info")
-        local target_memory=$(jq -r '.target_memory' "$task_info")
         local status=$(jq -r '.status' "$task_info")
+        local task_type_label
+        task_type_label=$(get_task_type_label "$task_type")
+        local subject_label
+        subject_label=$(get_task_subject_label "$task_info")
+        local target_label
+        target_label=$(get_task_target_label "$task_info")
 
         # 新增字段：执行次数、上次状态、上次错误
         local attempt=$(jq -r '.attempt // 0' "$task_info")
@@ -644,12 +693,9 @@ list_background_tasks() {
         local last_error=$(jq -r '.last_error // ""' "$task_info")
         local last_attempt_time=$(jq -r '.last_attempt_time // "N/A"' "$task_info")
 
-        # 提取实例名称（从 OCID 中提取）
-        local instance_short="${instance_ocid##*.}"  # 取最后一个点之后的内容
-
         # 检查进程是否还在运行
         local pid_file="$task_path/task.pid"
-        if [[ -f "$pid_file" ]]; then
+        if [[ "$status" == "running" && -f "$pid_file" ]]; then
             local pid=$(cat "$pid_file")
             if ! kill -0 "$pid" 2>/dev/null; then
                 status="stopped"
@@ -673,9 +719,9 @@ list_background_tasks() {
         esac
 
         echo -e "#$task_count ${BOLD}$task_id${NC}"
-        echo "  类型: $task_type"
-        echo "  实例: ${instance_short:0:20}..."
-        echo "  目标: ${target_ocpus} OCPU / ${target_memory} GB"
+        echo "  类型: $task_type_label"
+        echo "  对象: $subject_label"
+        echo "  目标: $target_label"
         echo -e "  状态: ${status_color}${status}${NC}"
         echo -e "  执行次数: ${BOLD}${attempt}${NC}"
         echo -e "  上次状态: ${last_status_color}${last_status}${NC}"
@@ -775,6 +821,8 @@ view_task_detail() {
             # 读取并格式化显示
             local task_type instance_ocid target_ocpus target_memory status attempt create_time
             local last_status last_error last_attempt_time
+            local display_name shape config_file created_instance_ocid
+            local task_type_label subject_label target_label
 
             task_type=$(jq -r '.task_type // "N/A"' "$task_info")
             instance_ocid=$(jq -r '.instance_ocid // "N/A"' "$task_info")
@@ -786,6 +834,13 @@ view_task_detail() {
             last_status=$(jq -r '.last_status // "N/A"' "$task_info")
             last_error=$(jq -r '.last_error // ""' "$task_info")
             last_attempt_time=$(jq -r '.last_attempt_time // "N/A"' "$task_info")
+            display_name=$(jq -r '.display_name // "N/A"' "$task_info")
+            shape=$(jq -r '.shape // "N/A"' "$task_info")
+            config_file=$(jq -r '.config_file // ""' "$task_info")
+            created_instance_ocid=$(jq -r '.created_instance_ocid // ""' "$task_info")
+            task_type_label=$(get_task_type_label "$task_type")
+            subject_label=$(get_task_subject_label "$task_info")
+            target_label=$(get_task_target_label "$task_info")
 
             # 状态颜色
             local status_color
@@ -804,18 +859,36 @@ view_task_detail() {
             esac
 
             # 显示基础信息
-            {
-                echo -e "任务ID\t$task_id"
-                echo -e "类型\t$task_type"
-                echo -e "实例OCID\t${instance_ocid:0:50}..."
-                echo -e "目标配置\t${target_ocpus} OCPU / ${target_memory} GB"
-                echo -e "重试间隔\t$(jq -r '.retry_interval // 10' "$task_info") 秒"
-                echo -e "创建时间\t$create_time"
-                echo -e "当前状态\t${status_color}${status}${NC}"
-                echo -e "执行次数\t$attempt"
-                echo -e "上次状态\t${last_status_color}${last_status}${NC}"
-                echo -e "上次尝试\t$last_attempt_time"
-            } | column -t -s $'\t'
+            if [[ "$task_type" == "create_instance" ]]; then
+                {
+                    echo -e "任务ID\t$task_id"
+                    echo -e "类型\t$task_type_label"
+                    echo -e "实例名称\t$display_name"
+                    echo -e "实例规格\t$shape"
+                    echo -e "配置文件\t${config_file:-N/A}"
+                    echo -e "目标配置\t$target_label"
+                    echo -e "重试间隔\t$(jq -r '.retry_interval // 30' "$task_info") 秒"
+                    echo -e "创建时间\t$create_time"
+                    echo -e "当前状态\t${status_color}${status}${NC}"
+                    echo -e "执行次数\t$attempt"
+                    echo -e "上次状态\t${last_status_color}${last_status}${NC}"
+                    echo -e "上次尝试\t$last_attempt_time"
+                    [[ -n "$created_instance_ocid" ]] && echo -e "已创建实例\t${created_instance_ocid:0:50}..."
+                } | column -t -s $'\t'
+            else
+                {
+                    echo -e "任务ID\t$task_id"
+                    echo -e "类型\t$task_type_label"
+                    echo -e "实例OCID\t${instance_ocid:0:50}..."
+                    echo -e "目标配置\t$target_label"
+                    echo -e "重试间隔\t$(jq -r '.retry_interval // 10' "$task_info") 秒"
+                    echo -e "创建时间\t$create_time"
+                    echo -e "当前状态\t${status_color}${status}${NC}"
+                    echo -e "执行次数\t$attempt"
+                    echo -e "上次状态\t${last_status_color}${last_status}${NC}"
+                    echo -e "上次尝试\t$last_attempt_time"
+                } | column -t -s $'\t'
+            fi
             echo ""
 
             # 显示错误信息（如果有）- 格式化显示
@@ -1025,6 +1098,7 @@ resume_task() {
     local target_memory=$(jq -r '.target_memory' "$task_info")
     local retry_interval=$(jq -r '.retry_interval' "$task_info")
     local current_status=$(jq -r '.status' "$task_info")
+    local config_file=$(jq -r '.config_file // ""' "$task_info")
 
     # 检查任务状态
     if [[ "$current_status" == "running" ]]; then
@@ -1040,9 +1114,15 @@ resume_task() {
     fi
 
     # 重新启动后台任务
-    (
-        exec_background_task "$task_id" "$task_type" "$instance_ocid" "$target_ocpus" "$target_memory" "$retry_interval"
-    ) &>"$task_path/task.log" &
+    if [[ "$task_type" == "create_instance" ]]; then
+        (
+            exec_create_instance_task "$task_id" "$config_file" "$retry_interval"
+        ) &>"$task_path/task.log" &
+    else
+        (
+            exec_background_task "$task_id" "$task_type" "$instance_ocid" "$target_ocpus" "$target_memory" "$retry_interval"
+        ) &>"$task_path/task.log" &
+    fi
 
     local pid=$!
     echo $pid > "$task_path/task.pid"
@@ -1852,7 +1932,7 @@ update_instance_config_direct() {
     fi
 
     # 创建后台任务
-    create_background_task "direct_update" "$INSTANCE_OCID" "$TARGET_OCPUS" "$TARGET_MEMORY" "$RETRY_INTERVAL"
+    create_background_task "direct_update_instance" "$INSTANCE_OCID" "$TARGET_OCPUS" "$TARGET_MEMORY" "$RETRY_INTERVAL"
 }
 
 # ================================
@@ -1860,7 +1940,7 @@ update_instance_config_direct() {
 # ================================
 generate_update_template() {
     local instance_ocid="$1"
-    local output_file="${2:-instance_update.json}"
+    local output_file="${2:-update_instance_config.json}"
 
     show_header
     echo -e "${BOLD}生成更新配置模板${NC}"
@@ -2013,8 +2093,8 @@ update_instance_from_file() {
             1)
                 local instance_ocid output_file
                 read -p "实例 OCID: " instance_ocid
-                read -p "输出文件名 [instance_update.json]: " output_file
-                output_file="${output_file:-instance_update.json}"
+                read -p "输出文件名 [update_instance_config.json]: " output_file
+                output_file="${output_file:-update_instance_config.json}"
                 generate_update_template "$instance_ocid" "$output_file"
                 return $?
                 ;;
@@ -2207,7 +2287,7 @@ update_instance_from_file() {
                 retry_interval="${retry_interval:-10}"
 
                 # 创建后台任务（跳过检测，因为前面已经检测过了）
-                create_background_task "full_update" "$instance_id" "$target_ocpus" "$target_memory" "$retry_interval" "true"
+                create_background_task "full_update_instance" "$instance_id" "$target_ocpus" "$target_memory" "$retry_interval" "true"
             fi
         fi
     else
@@ -2236,7 +2316,7 @@ update_instance_from_file() {
                 retry_interval="${retry_interval:-10}"
 
                 # 创建后台任务（跳过检测，因为前面已经检测过了）
-                create_background_task "direct_update" "$instance_id" "$target_ocpus" "$target_memory" "$retry_interval" "true"
+                create_background_task "direct_update_instance" "$instance_id" "$target_ocpus" "$target_memory" "$retry_interval" "true"
             fi
         else
             log_error "更新命令执行失败"
@@ -2255,7 +2335,7 @@ update_instance_from_file() {
                 retry_interval="${retry_interval:-10}"
 
                 # 创建后台任务（跳过检测，因为前面已经检测过了）
-                create_background_task "direct_update" "$instance_id" "$target_ocpus" "$target_memory" "$retry_interval" "true"
+                create_background_task "direct_update_instance" "$instance_id" "$target_ocpus" "$target_memory" "$retry_interval" "true"
             fi
         fi
     fi
@@ -2350,7 +2430,1717 @@ update_instance_config_full() {
     fi
 
     # 创建后台任务
-    create_background_task "full_update" "$INSTANCE_OCID" "$TARGET_OCPUS" "$TARGET_MEMORY" "$RETRY_INTERVAL"
+    create_background_task "full_update_instance" "$INSTANCE_OCID" "$TARGET_OCPUS" "$TARGET_MEMORY" "$RETRY_INTERVAL"
+}
+
+# ================================
+# 创建实例相关辅助函数
+# ================================
+get_tenancy_id_from_config() {
+    grep "^tenancy=" "$OCI_CONFIG_FILE" 2>/dev/null | cut -d'=' -f2 | head -1
+}
+
+expand_path() {
+    local path="$1"
+    echo "${path/#\~/$HOME}"
+}
+
+SELECT_RESULT=""
+SELECT_DEFAULT_OPTION_VALUE=""
+
+select_option_pairs() {
+    local title="$1"
+    shift
+    local options=("$@")
+    SELECT_RESULT=""
+
+    if [[ ${#options[@]} -eq 0 ]]; then
+        SELECT_DEFAULT_OPTION_VALUE=""
+        return 1
+    fi
+
+    echo ""
+    echo -e "${CYAN}${title}${NC}"
+    local i
+    for ((i=0; i<${#options[@]}; i++)); do
+        local label="${options[$i]%%|*}"
+        echo "  $((i+1))) $label"
+    done
+    echo "  0) 手动输入"
+    echo ""
+
+    local choice
+    local default_index=1
+    local default_label="${options[0]%%|*}"
+    local default_value="$SELECT_DEFAULT_OPTION_VALUE"
+    local i
+
+    if [[ -n "$default_value" ]]; then
+        for ((i=0; i<${#options[@]}; i++)); do
+            local option_value="${options[$i]#*|}"
+            if [[ "$option_value" == "$default_value" ]]; then
+                default_index=$((i+1))
+                default_label="${options[$i]%%|*}"
+                break
+            fi
+        done
+    fi
+
+    read -p "请选择 [默认: ${default_index} ${default_label}; 0 手动输入]: " choice
+    choice="${choice:-$default_index}"
+    SELECT_DEFAULT_OPTION_VALUE=""
+
+    if [[ "$choice" =~ ^[0-9]+$ && "$choice" -ge 1 && "$choice" -le ${#options[@]} ]]; then
+        SELECT_RESULT="${options[$((choice-1))]#*|}"
+        return 0
+    fi
+
+    return 1
+}
+
+read_choice_with_default_label() {
+    local result_var="$1"
+    local prompt="$2"
+    local default_value="$3"
+    local default_label="$4"
+    local input_value
+
+    read -p "${prompt} [默认: ${default_value} ${default_label}]: " input_value
+    printf -v "$result_var" '%s' "${input_value:-$default_value}"
+}
+
+query_availability_domains() {
+    local default_value="$1"
+    local options=()
+    while IFS= read -r ad_name; do
+        [[ -n "$ad_name" ]] && options+=("${ad_name}|${ad_name}")
+    done < <(oci iam availability-domain list --all --output json 2>/dev/null | jq -r '.data[].name // empty')
+
+    SELECT_DEFAULT_OPTION_VALUE="$default_value"
+    select_option_pairs "可用性域列表" "${options[@]}"
+}
+
+query_shapes() {
+    local compartment_id="$1"
+    local availability_domain="$2"
+    local default_value="$3"
+    local options=()
+
+    while IFS= read -r shape_name; do
+        [[ -n "$shape_name" ]] && options+=("${shape_name}|${shape_name}")
+    done < <(oci compute shape list \
+        --compartment-id "$compartment_id" \
+        --availability-domain "$availability_domain" \
+        --all \
+        --output json 2>/dev/null | jq -r '.data[].shape // empty' | sort -u)
+
+    SELECT_DEFAULT_OPTION_VALUE="$default_value"
+    select_option_pairs "实例规格列表" "${options[@]}"
+}
+
+query_vcns() {
+    local compartment_id="$1"
+    local options=()
+
+    while IFS=$'\t' read -r display_name vcn_id cidr_block; do
+        [[ -z "$vcn_id" ]] && continue
+        options+=("${display_name} (${cidr_block})|${vcn_id}")
+    done < <(oci network vcn list \
+        --compartment-id "$compartment_id" \
+        --all \
+        --output json 2>/dev/null | jq -r '.data[] | [.["display-name"], .id, .["cidr-block"]] | @tsv')
+
+    select_option_pairs "VCN 列表" "${options[@]}"
+}
+
+query_image_operating_systems() {
+    local compartment_id="$1"
+    local default_value="$2"
+    local options=()
+
+    while IFS= read -r os_name; do
+        [[ -n "$os_name" ]] && options+=("${os_name}|${os_name}")
+    done < <(oci compute image list \
+        --compartment-id "$compartment_id" \
+        --all \
+        --output json 2>/dev/null | jq -r '.data[]."operating-system" // empty' | sort -u)
+
+    SELECT_DEFAULT_OPTION_VALUE="$default_value"
+    select_option_pairs "操作系统列表" "${options[@]}"
+}
+
+query_image_operating_system_versions() {
+    local compartment_id="$1"
+    local operating_system="$2"
+    local default_value="$3"
+    local options=()
+
+    while IFS= read -r os_version; do
+        [[ -n "$os_version" ]] && options+=("${os_version}|${os_version}")
+    done < <(oci compute image list \
+        --compartment-id "$compartment_id" \
+        --operating-system "$operating_system" \
+        --all \
+        --output json 2>/dev/null | jq -r '.data[]."operating-system-version" // empty' | sort -u)
+
+    SELECT_DEFAULT_OPTION_VALUE="$default_value"
+    select_option_pairs "操作系统版本列表 (${operating_system})" "${options[@]}"
+}
+
+LAST_CREATED_VCN_ID=""
+LAST_CREATED_VCN_CIDR=""
+LAST_CREATED_VCN_DEFAULT_ROUTE_TABLE_ID=""
+LAST_CREATED_VCN_PUBLIC_READY="false"
+
+generate_default_network_name() {
+    local prefix="$1"
+    echo "${prefix}-$(date +%m%d%H%M)"
+}
+
+generate_default_dns_label() {
+    local prefix="$1"
+    local cleaned
+    cleaned=$(echo "$prefix" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9')
+    [[ -z "$cleaned" ]] && cleaned="net"
+    cleaned="${cleaned:0:6}"
+    echo "${cleaned}$(date +%m%d%H)"
+}
+
+get_vcn_cidr() {
+    local vcn_id="$1"
+    oci network vcn get \
+        --vcn-id "$vcn_id" \
+        --query 'data."cidr-block"' \
+        --raw-output 2>/dev/null
+}
+
+get_vcn_default_route_table_id() {
+    local vcn_id="$1"
+    oci network vcn get \
+        --vcn-id "$vcn_id" \
+        --query 'data."default-route-table-id"' \
+        --raw-output 2>/dev/null
+}
+
+derive_default_subnet_cidr() {
+    local vcn_cidr="$1"
+
+    if [[ "$vcn_cidr" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.[0-9]{1,3}\.[0-9]{1,3}/ ]]; then
+        echo "${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.1.0/24"
+    else
+        echo "10.0.0.0/24"
+    fi
+}
+
+ensure_public_route_for_vcn() {
+    local compartment_id="$1"
+    local vcn_id="$2"
+    local igw_name="$3"
+
+    local igw_id route_table_id route_rules_json current_rules
+    igw_id=$(oci network internet-gateway list \
+        --compartment-id "$compartment_id" \
+        --vcn-id "$vcn_id" \
+        --all \
+        --output json 2>/dev/null | jq -r '.data[] | select(."lifecycle-state" == "AVAILABLE") | .id' | head -1)
+
+    if [[ -z "$igw_id" || "$igw_id" == "null" ]]; then
+        log_info "正在创建 Internet Gateway..."
+        igw_id=$(oci network internet-gateway create \
+            --compartment-id "$compartment_id" \
+            --vcn-id "$vcn_id" \
+            --is-enabled true \
+            --display-name "$igw_name" \
+            --wait-for-state AVAILABLE \
+            --query 'data.id' \
+            --raw-output 2>&1)
+
+        if [[ $? -ne 0 ]]; then
+            log_error "Internet Gateway 创建失败: $igw_id"
+            return 1
+        fi
+        igw_id="$(echo "$igw_id" | tail -n 1 | tr -d '\r')"
+    else
+        log_info "复用现有 Internet Gateway: $igw_id"
+    fi
+
+    route_table_id=$(get_vcn_default_route_table_id "$vcn_id")
+    if [[ -z "$route_table_id" || "$route_table_id" == "null" ]]; then
+        log_error "无法获取 VCN 默认路由表"
+        return 1
+    fi
+
+    current_rules=$(oci network route-table get \
+        --rt-id "$route_table_id" \
+        --query 'data."route-rules"' \
+        --output json 2>/dev/null)
+    [[ -z "$current_rules" || "$current_rules" == "null" ]] && current_rules="[]"
+
+    if echo "$current_rules" | jq -e --arg igw_id "$igw_id" '.[] | select(.cidrBlock == "0.0.0.0/0" and .networkEntityId == $igw_id)' >/dev/null 2>&1; then
+        log_info "默认路由表已存在公网路由"
+        LAST_CREATED_VCN_DEFAULT_ROUTE_TABLE_ID="$route_table_id"
+        LAST_CREATED_VCN_PUBLIC_READY="true"
+        return 0
+    fi
+
+    route_rules_json=$(echo "$current_rules" | jq -c --arg igw_id "$igw_id" '. + [{"cidrBlock":"0.0.0.0/0","networkEntityId":$igw_id}]')
+
+    log_info "正在为默认路由表添加公网路由..."
+    local update_result
+    update_result=$(oci network route-table update \
+        --rt-id "$route_table_id" \
+        --route-rules "$route_rules_json" \
+        --force \
+        --query 'data.id' \
+        --raw-output 2>&1)
+    if [[ $? -ne 0 ]]; then
+        log_error "更新默认路由表失败: $update_result"
+        return 1
+    fi
+
+    LAST_CREATED_VCN_DEFAULT_ROUTE_TABLE_ID="$route_table_id"
+    LAST_CREATED_VCN_PUBLIC_READY="true"
+    log_success "默认公网路由已配置完成"
+    return 0
+}
+
+create_vcn_interactive() {
+    local compartment_id="$1"
+
+    echo ""
+    echo -e "${BOLD}----------------------------------------${NC}"
+    echo -e "${BOLD}新建 VCN${NC}"
+    echo -e "${BOLD}----------------------------------------${NC}"
+    echo ""
+
+    local vcn_name vcn_cidr dns_label create_result vcn_id
+    local setup_mode input_value auto_public_network default_vcn_name default_vcn_cidr default_dns_label igw_name
+
+    default_vcn_name="$(generate_default_network_name "auto-vcn")"
+    default_vcn_cidr="10.0.0.0/16"
+    default_dns_label="$(generate_default_dns_label "vcn")"
+
+    echo "创建模式:"
+    echo "  1) 快速创建公网 VCN（推荐，自动创建 Internet Gateway 和默认公网路由）"
+    echo "  2) 仅创建基础 VCN"
+    echo "  3) 自定义"
+    read_choice_with_default_label setup_mode "请选择" "1" "快速创建公网 VCN"
+    auto_public_network="true"
+    [[ "$setup_mode" == "2" ]] && auto_public_network="false"
+
+    if [[ "$setup_mode" == "3" ]]; then
+        read -p "创建后是否自动配置公网访问（Internet Gateway + 默认路由）? [Y/n]: " -r
+        [[ -z "$REPLY" ]] && REPLY="y"
+        [[ ! $REPLY =~ ^[Yy]$ ]] && auto_public_network="false"
+    fi
+
+    read -p "VCN 名称 [默认: ${default_vcn_name}]: " vcn_name
+    vcn_name="${vcn_name:-$default_vcn_name}"
+    while [[ -z "$vcn_name" ]]; do
+        echo -e "${RED}VCN 名称不能为空${NC}"
+        read -p "VCN 名称: " vcn_name
+    done
+
+    read -p "VCN CIDR [默认: ${default_vcn_cidr}]: " vcn_cidr
+    vcn_cidr="${vcn_cidr:-$default_vcn_cidr}"
+    while ! is_valid_cidr_block "$vcn_cidr"; do
+        echo -e "${RED}VCN CIDR 格式无效${NC}"
+        read -p "VCN CIDR: " vcn_cidr
+    done
+
+    read -p "VCN DNS Label [默认: ${default_dns_label}]: " dns_label
+    dns_label="${dns_label:-$default_dns_label}"
+    while ! is_valid_dns_label "$dns_label"; do
+        echo -e "${RED}VCN DNS Label 无效，请使用 1-15 位小写字母数字，且必须以字母开头${NC}"
+        read -p "VCN DNS Label: " dns_label
+    done
+
+    igw_name="${vcn_name}-igw"
+
+    echo ""
+    echo -e "${CYAN}VCN 创建摘要:${NC}"
+    echo "  VCN 名称:     $vcn_name"
+    echo "  VCN CIDR:     $vcn_cidr"
+    echo "  DNS Label:    $dns_label"
+    echo "  公网访问:     $([[ "$auto_public_network" == "true" ]] && echo "自动配置" || echo "不自动配置")"
+    echo ""
+
+    read -p "确认创建 VCN? [Y/n]: " -r
+    [[ -z "$REPLY" ]] && REPLY="y"
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        log_info "已取消创建 VCN"
+        return 1
+    fi
+
+    log_info "正在创建 VCN..."
+    create_result=$(oci network vcn create \
+        --compartment-id "$compartment_id" \
+        --display-name "$vcn_name" \
+        --cidr-blocks "[\"$vcn_cidr\"]" \
+        --dns-label "$dns_label" \
+        --wait-for-state AVAILABLE \
+        --query "data.id" \
+        --raw-output 2>&1)
+
+    if [[ $? -ne 0 ]]; then
+        log_error "VCN 创建失败: $create_result"
+        return 1
+    fi
+
+    vcn_id="$(echo "$create_result" | tail -n 1 | tr -d '\r')"
+    if [[ -z "$vcn_id" || "$vcn_id" == "null" || ! "$vcn_id" =~ ^ocid1\.vcn\.oc1\. ]]; then
+        log_error "未能从创建结果中解析 VCN OCID"
+        echo "$create_result"
+        return 1
+    fi
+
+    log_success "VCN 创建成功: $vcn_id"
+    LAST_CREATED_VCN_ID="$vcn_id"
+    LAST_CREATED_VCN_CIDR="$vcn_cidr"
+    LAST_CREATED_VCN_DEFAULT_ROUTE_TABLE_ID=""
+    LAST_CREATED_VCN_PUBLIC_READY="false"
+
+    if [[ "$auto_public_network" == "true" ]]; then
+        if ! ensure_public_route_for_vcn "$compartment_id" "$vcn_id" "$igw_name"; then
+            log_warn "VCN 已创建，但公网访问配置未完全自动完成，可稍后手动配置"
+        fi
+    fi
+
+    SELECT_RESULT="$vcn_id"
+    return 0
+}
+
+query_images() {
+    local compartment_id="$1"
+    local operating_system="$2"
+    local operating_system_version="$3"
+    local shape="$4"
+    local default_value="$5"
+    local options=()
+    local filtered_options=()
+    local cmd=(
+        oci compute image list
+        --compartment-id "$compartment_id"
+        --operating-system "$operating_system"
+        --sort-by TIMECREATED
+        --sort-order DESC
+        --all
+        --output json
+    )
+
+    if [[ -n "$operating_system_version" ]]; then
+        cmd+=(--operating-system-version "$operating_system_version")
+    fi
+    while IFS=$'\t' read -r display_name image_id os_version; do
+        [[ -z "$image_id" ]] && continue
+        options+=("${display_name} (版本: ${os_version:-N/A})|${image_id}")
+    done < <("${cmd[@]}" 2>/dev/null | jq -r '.data[] | [.["display-name"], .id, (.["operating-system-version"] // "N/A")] | @tsv' | head -20)
+
+    if [[ -n "$shape" ]]; then
+        local filtered_cmd=("${cmd[@]}" --shape "$shape")
+        while IFS=$'\t' read -r display_name image_id os_version; do
+            [[ -z "$image_id" ]] && continue
+            filtered_options+=("${display_name} (版本: ${os_version:-N/A})|${image_id}")
+        done < <("${filtered_cmd[@]}" 2>/dev/null | jq -r '.data[] | [.["display-name"], .id, (.["operating-system-version"] // "N/A")] | @tsv' | head -20)
+    fi
+
+    local title="镜像列表 (${operating_system}"
+    if [[ -n "$operating_system_version" ]]; then
+        title="${title} ${operating_system_version}"
+    fi
+    title="${title})"
+
+    if [[ ${#filtered_options[@]} -gt 0 ]]; then
+        SELECT_DEFAULT_OPTION_VALUE="$default_value"
+        select_option_pairs "${title} - 已按实例规格过滤" "${filtered_options[@]}"
+    else
+        [[ -n "$shape" ]] && log_warn "按当前实例规格未筛到镜像，已回退显示该系统/版本的完整镜像列表"
+        SELECT_DEFAULT_OPTION_VALUE="$default_value"
+        select_option_pairs "$title" "${options[@]}"
+    fi
+}
+
+query_subnets() {
+    local compartment_id="$1"
+    local vcn_id="$2"
+    local default_value="$3"
+    local options=()
+    local cmd=(oci network subnet list --compartment-id "$compartment_id" --all --output json)
+
+    if [[ -n "$vcn_id" ]]; then
+        cmd+=(--vcn-id "$vcn_id")
+    fi
+
+    while IFS=$'\t' read -r display_name subnet_id cidr_block private_only; do
+        [[ -z "$subnet_id" ]] && continue
+        local subnet_type="公网"
+        [[ "$private_only" == "true" ]] && subnet_type="私网"
+        options+=("${display_name} (${cidr_block}, ${subnet_type})|${subnet_id}")
+    done < <("${cmd[@]}" 2>/dev/null | jq -r '.data[] | [.["display-name"], .id, .["cidr-block"], (.["prohibit-public-ip-on-vnic"] // false)] | @tsv')
+
+    SELECT_DEFAULT_OPTION_VALUE="$default_value"
+    select_option_pairs "子网列表" "${options[@]}"
+}
+
+is_valid_cidr_block() {
+    local cidr_block="$1"
+    [[ "$cidr_block" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]]
+}
+
+is_valid_dns_label() {
+    local dns_label="$1"
+    [[ "$dns_label" =~ ^[a-z][a-z0-9]{0,14}$ ]]
+}
+
+create_subnet_interactive() {
+    local compartment_id="$1"
+    local availability_domain="$2"
+
+    echo ""
+    echo -e "${BOLD}----------------------------------------${NC}"
+    echo -e "${BOLD}新建子网${NC}"
+    echo -e "${BOLD}----------------------------------------${NC}"
+    echo ""
+
+    local vcn_id subnet_name subnet_cidr dns_label subnet_scope subnet_type prohibit_public_ip use_ad
+    local route_table_id security_list_ids_json input_value create_result subnet_id vcn_cidr
+    local default_subnet_name default_public_name default_private_name default_subnet_cidr default_dns_label
+
+    echo "VCN 获取方式:"
+    echo "  1) 查询并选择"
+    echo "  2) 手动输入"
+    echo "  3) 新建 VCN"
+    read_choice_with_default_label input_value "请选择" "1" "查询并选择"
+
+    if [[ "$input_value" == "1" ]] && query_vcns "$compartment_id"; then
+        vcn_id="$SELECT_RESULT"
+    elif [[ "$input_value" == "1" ]]; then
+        echo ""
+        log_warn "未查询到可用 VCN，或未选择 VCN"
+        read -p "是否现在新建一个 VCN? [Y/n]: " -r
+        [[ -z "$REPLY" ]] && REPLY="y"
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            if create_vcn_interactive "$compartment_id"; then
+                vcn_id="$SELECT_RESULT"
+            fi
+        fi
+    elif [[ "$input_value" == "3" ]]; then
+        if create_vcn_interactive "$compartment_id"; then
+            vcn_id="$SELECT_RESULT"
+        fi
+    else
+        read -p "VCN OCID: " vcn_id
+    fi
+    while [[ -z "$vcn_id" || ! "$vcn_id" =~ ^ocid1\.vcn\.oc1\. ]]; do
+        echo -e "${RED}无效的 VCN OCID${NC}"
+        read -p "VCN OCID: " vcn_id
+    done
+
+    vcn_cidr="$(get_vcn_cidr "$vcn_id")"
+    default_public_name="$(generate_default_network_name "public-subnet")"
+    default_private_name="$(generate_default_network_name "private-subnet")"
+    default_subnet_name="$default_public_name"
+    default_subnet_cidr="$(derive_default_subnet_cidr "$vcn_cidr")"
+    default_dns_label="$(generate_default_dns_label "subnet")"
+
+    echo ""
+    echo "子网类型:"
+    echo "  1) 公有子网（允许分配公网IP）"
+    echo "  2) 私有子网（禁止分配公网IP）"
+    read_choice_with_default_label subnet_type "请选择" "1" "公有子网"
+    prohibit_public_ip="false"
+    if [[ "$subnet_type" == "2" ]]; then
+        prohibit_public_ip="true"
+        default_subnet_name="$default_private_name"
+    fi
+
+    read -p "子网名称 [默认: ${default_subnet_name}]: " subnet_name
+    subnet_name="${subnet_name:-$default_subnet_name}"
+    while [[ -z "$subnet_name" ]]; do
+        echo -e "${RED}子网名称不能为空${NC}"
+        read -p "子网名称: " subnet_name
+    done
+
+    read -p "子网 CIDR [默认: ${default_subnet_cidr}]: " subnet_cidr
+    subnet_cidr="${subnet_cidr:-$default_subnet_cidr}"
+    while ! is_valid_cidr_block "$subnet_cidr"; do
+        echo -e "${RED}子网 CIDR 格式无效${NC}"
+        read -p "子网 CIDR: " subnet_cidr
+    done
+
+    read -p "DNS Label [默认: ${default_dns_label}]（可选）: " dns_label
+    dns_label="${dns_label:-$default_dns_label}"
+    while [[ -n "$dns_label" ]] && ! is_valid_dns_label "$dns_label"; do
+        echo -e "${RED}DNS Label 无效，请使用 1-15 位小写字母数字，且必须以字母开头${NC}"
+        read -p "DNS Label（可选）: " dns_label
+    done
+
+    echo ""
+    echo "子网范围:"
+    echo "  1) 区域子网（推荐）"
+    echo "  2) 可用性域子网 (${availability_domain})"
+    read_choice_with_default_label subnet_scope "请选择" "1" "区域子网"
+    use_ad="false"
+    [[ "$subnet_scope" == "2" ]] && use_ad="true"
+
+    echo ""
+    if [[ "$prohibit_public_ip" == "false" && "$vcn_id" == "$LAST_CREATED_VCN_ID" && "$LAST_CREATED_VCN_PUBLIC_READY" == "true" && -n "$LAST_CREATED_VCN_DEFAULT_ROUTE_TABLE_ID" ]]; then
+        route_table_id="$LAST_CREATED_VCN_DEFAULT_ROUTE_TABLE_ID"
+        log_info "检测到刚创建的公网 VCN，默认使用其路由表: ${route_table_id}"
+        read -p "是否改为手动指定路由表? [y/N]: " -r
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            read -p "路由表 OCID（可选，直接回车跳过）: " route_table_id
+        fi
+    else
+        read -p "路由表 OCID（可选，直接回车跳过）: " route_table_id
+    fi
+
+    read -p "安全列表 OCID JSON 数组（可选，如 [\"ocid1.securitylist...\"]）: " security_list_ids_json
+    if [[ -n "$security_list_ids_json" ]]; then
+        while ! echo "$security_list_ids_json" | jq -e 'type == "array"' >/dev/null 2>&1; do
+            echo -e "${RED}安全列表必须是 JSON 数组格式${NC}"
+            read -p "安全列表 OCID JSON 数组（可选）: " security_list_ids_json
+            [[ -z "$security_list_ids_json" ]] && break
+        done
+    fi
+
+    echo ""
+    echo -e "${CYAN}子网创建摘要:${NC}"
+    echo "  VCN:          ${vcn_id:0:50}..."
+    [[ -n "$vcn_cidr" ]] && echo "  VCN CIDR:     $vcn_cidr"
+    echo "  子网名称:     $subnet_name"
+    echo "  CIDR:         $subnet_cidr"
+    echo "  DNS Label:    ${dns_label:-未设置}"
+    echo "  范围:         $([[ "$use_ad" == "true" ]] && echo "可用性域子网" || echo "区域子网")"
+    echo "  类型:         $([[ "$prohibit_public_ip" == "true" ]] && echo "私有子网" || echo "公有子网")"
+    [[ -n "$route_table_id" ]] && echo "  路由表:       ${route_table_id:0:50}..."
+    [[ -n "$security_list_ids_json" ]] && echo "  安全列表:     已指定"
+    echo ""
+
+    read -p "确认创建子网? [Y/n]: " -r
+    [[ -z "$REPLY" ]] && REPLY="y"
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        log_info "已取消创建子网"
+        return 1
+    fi
+
+    local cmd=(
+        oci network subnet create
+        --compartment-id "$compartment_id"
+        --vcn-id "$vcn_id"
+        --display-name "$subnet_name"
+        --cidr-block "$subnet_cidr"
+        --prohibit-public-ip-on-vnic "$prohibit_public_ip"
+        --wait-for-state AVAILABLE
+        --query "data.id"
+        --raw-output
+    )
+
+    if [[ "$use_ad" == "true" ]]; then
+        cmd+=(--availability-domain "$availability_domain")
+    fi
+    if [[ -n "$dns_label" ]]; then
+        cmd+=(--dns-label "$dns_label")
+    fi
+    if [[ -n "$route_table_id" ]]; then
+        cmd+=(--route-table-id "$route_table_id")
+    fi
+    if [[ -n "$security_list_ids_json" ]]; then
+        cmd+=(--security-list-ids "$security_list_ids_json")
+    fi
+
+    log_info "正在创建子网..."
+    create_result=$("${cmd[@]}" 2>&1)
+    if [[ $? -ne 0 ]]; then
+        log_error "子网创建失败: $create_result"
+        return 1
+    fi
+
+    subnet_id="$(echo "$create_result" | tail -n 1 | tr -d '\r')"
+    if [[ -z "$subnet_id" || "$subnet_id" == "null" || ! "$subnet_id" =~ ^ocid1\.subnet\.oc1\. ]]; then
+        log_error "未能从创建结果中解析子网 OCID"
+        echo "$create_result"
+        return 1
+    fi
+
+    log_success "子网创建成功: $subnet_id"
+    if [[ "$prohibit_public_ip" == "true" ]]; then
+        log_warn "该子网为私有子网，后续创建实例时请将公网 IP 设置为 false"
+    fi
+
+    SELECT_RESULT="$subnet_id"
+    return 0
+}
+
+load_create_instance_defaults() {
+    local config_file="$1"
+    CREATE_COMPARTMENT_ID="$(get_tenancy_id_from_config)"
+    CREATE_AVAILABILITY_DOMAIN=""
+    CREATE_SUBNET_ID=""
+    CREATE_IMAGE_ID=""
+    CREATE_IMAGE_OS="Oracle Linux"
+    CREATE_IMAGE_OS_VERSION=""
+    CREATE_SSH_PUBLIC_KEY="$HOME/.ssh/id_rsa.pub"
+    CREATE_SHAPE="VM.Standard.A1.Flex"
+    CREATE_OCPUS="4"
+    CREATE_MEMORY_GB="24"
+    CREATE_BOOT_VOLUME_SIZE="150"
+    CREATE_BOOT_VOLUME_VPUS_PER_GB="10"
+    CREATE_DISPLAY_NAME="oci-instance-$(date +%Y%m%d-%H%M%S)"
+    CREATE_ASSIGN_PUBLIC_IP="true"
+    CREATE_RETRY_INTERVAL="30"
+
+    if [[ -f "$config_file" ]] && jq empty "$config_file" 2>/dev/null; then
+        CREATE_COMPARTMENT_ID="$(jq -r '.compartmentId // empty' "$config_file")"
+        [[ -z "$CREATE_COMPARTMENT_ID" || "$CREATE_COMPARTMENT_ID" == "null" ]] && CREATE_COMPARTMENT_ID="$(get_tenancy_id_from_config)"
+        CREATE_AVAILABILITY_DOMAIN="$(jq -r '.availabilityDomain // empty' "$config_file")"
+        CREATE_SUBNET_ID="$(jq -r '.subnetId // empty' "$config_file")"
+        CREATE_IMAGE_ID="$(jq -r '.imageId // empty' "$config_file")"
+        CREATE_IMAGE_OS="$(jq -r '.imageOperatingSystem // "Oracle Linux"' "$config_file")"
+        CREATE_IMAGE_OS_VERSION="$(jq -r '.imageOperatingSystemVersion // empty' "$config_file")"
+        CREATE_SSH_PUBLIC_KEY="$(jq -r '.sshAuthorizedKeysFile // empty' "$config_file")"
+        [[ -z "$CREATE_SSH_PUBLIC_KEY" || "$CREATE_SSH_PUBLIC_KEY" == "null" ]] && CREATE_SSH_PUBLIC_KEY="$HOME/.ssh/id_rsa.pub"
+        CREATE_SHAPE="$(jq -r '.shape // "VM.Standard.A1.Flex"' "$config_file")"
+        CREATE_OCPUS="$(jq -r '.ocpus // 1' "$config_file")"
+        CREATE_MEMORY_GB="$(jq -r '.memoryInGBs // 6' "$config_file")"
+        CREATE_BOOT_VOLUME_SIZE="$(jq -r '.bootVolumeSizeInGBs // 50' "$config_file")"
+        CREATE_BOOT_VOLUME_VPUS_PER_GB="$(jq -r '.bootVolumeVpusPerGB // 10' "$config_file")"
+        CREATE_DISPLAY_NAME="$(jq -r '.displayName // empty' "$config_file")"
+        [[ -z "$CREATE_DISPLAY_NAME" || "$CREATE_DISPLAY_NAME" == "null" ]] && CREATE_DISPLAY_NAME="oci-instance-$(date +%Y%m%d-%H%M%S)"
+        CREATE_ASSIGN_PUBLIC_IP="$(jq -r '.assignPublicIp // true' "$config_file")"
+        CREATE_RETRY_INTERVAL="$(jq -r '.retryInterval // 30' "$config_file")"
+    fi
+}
+
+validate_create_instance_config() {
+    local config_file="$1"
+
+    if [[ ! -f "$config_file" ]]; then
+        log_error "创建实例配置文件不存在: $config_file"
+        return 1
+    fi
+
+    if ! jq empty "$config_file" 2>/dev/null; then
+        log_error "创建实例配置文件 JSON 格式无效: $config_file"
+        return 1
+    fi
+
+    local compartment_id availability_domain subnet_id image_id ssh_public_key shape display_name assign_public_ip
+    local ocpus memory_gbs boot_volume_size boot_volume_vpus_per_gb
+    compartment_id=$(jq -r '.compartmentId // empty' "$config_file")
+    availability_domain=$(jq -r '.availabilityDomain // empty' "$config_file")
+    subnet_id=$(jq -r '.subnetId // empty' "$config_file")
+    image_id=$(jq -r '.imageId // empty' "$config_file")
+    ssh_public_key=$(jq -r '.sshAuthorizedKeysFile // empty' "$config_file")
+    shape=$(jq -r '.shape // empty' "$config_file")
+    display_name=$(jq -r '.displayName // empty' "$config_file")
+    assign_public_ip=$(jq -r '.assignPublicIp // true' "$config_file")
+    ocpus=$(jq -r '.ocpus // empty' "$config_file")
+    memory_gbs=$(jq -r '.memoryInGBs // empty' "$config_file")
+    boot_volume_size=$(jq -r '.bootVolumeSizeInGBs // empty' "$config_file")
+    boot_volume_vpus_per_gb=$(jq -r '.bootVolumeVpusPerGB // empty' "$config_file")
+
+    if [[ -z "$compartment_id" || ! "$compartment_id" =~ ^ocid1\. ]]; then
+        log_error "compartmentId 无效"
+        return 1
+    fi
+    if [[ -z "$availability_domain" ]]; then
+        log_error "availabilityDomain 不能为空"
+        return 1
+    fi
+    if [[ -z "$subnet_id" || ! "$subnet_id" =~ ^ocid1\.subnet\.oc1\. ]]; then
+        log_error "subnetId 无效"
+        return 1
+    fi
+    if [[ -z "$image_id" || ! "$image_id" =~ ^ocid1\.image\.oc1\. ]]; then
+        log_error "imageId 无效"
+        return 1
+    fi
+    if [[ -z "$shape" ]]; then
+        log_error "shape 不能为空"
+        return 1
+    fi
+    if [[ -z "$display_name" ]]; then
+        log_error "displayName 不能为空"
+        return 1
+    fi
+    if [[ "$assign_public_ip" != "true" && "$assign_public_ip" != "false" ]]; then
+        log_error "assignPublicIp 必须为 true 或 false"
+        return 1
+    fi
+
+    local expanded_ssh_key
+    expanded_ssh_key="$(expand_path "$ssh_public_key")"
+    if [[ ! -f "$expanded_ssh_key" ]]; then
+        log_error "SSH 公钥文件不存在: $expanded_ssh_key"
+        return 1
+    fi
+
+    if [[ "$shape" == *"Flex"* ]]; then
+        if [[ ! "$ocpus" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+            log_error "Flex 规格必须提供有效的 ocpus"
+            return 1
+        fi
+        if [[ ! "$memory_gbs" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+            log_error "Flex 规格必须提供有效的 memoryInGBs"
+            return 1
+        fi
+    fi
+
+    if [[ -n "$boot_volume_size" && "$boot_volume_size" != "null" ]]; then
+        if [[ ! "$boot_volume_size" =~ ^[0-9]+$ || "$boot_volume_size" -lt 1 || "$boot_volume_size" -gt 32768 ]]; then
+            log_error "bootVolumeSizeInGBs 必须为 1-32768 的整数"
+            return 1
+        fi
+    fi
+
+    if [[ -n "$boot_volume_vpus_per_gb" && "$boot_volume_vpus_per_gb" != "null" ]]; then
+        if [[ ! "$boot_volume_vpus_per_gb" =~ ^[0-9]+$ ]]; then
+            log_error "bootVolumeVpusPerGB 必须为整数"
+            return 1
+        fi
+        if [[ "$boot_volume_vpus_per_gb" -lt 10 || "$boot_volume_vpus_per_gb" -gt 120 || $((boot_volume_vpus_per_gb % 10)) -ne 0 ]]; then
+            log_error "bootVolumeVpusPerGB 必须为 10-120 且为 10 的倍数"
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
+show_create_instance_config_summary() {
+    local config_file="${1:-$CREATE_INSTANCE_CONFIG}"
+
+    if [[ ! -f "$config_file" ]]; then
+        log_warn "尚未保存创建实例配置: $config_file"
+        return 1
+    fi
+
+    if ! jq empty "$config_file" 2>/dev/null; then
+        log_error "配置文件 JSON 格式无效: $config_file"
+        return 1
+    fi
+
+    local compartment_id availability_domain subnet_id image_id image_os image_os_version shape display_name assign_public_ip
+    local ssh_public_key boot_volume_size boot_volume_vpus_per_gb ocpus memory_gbs retry_interval
+    compartment_id=$(jq -r '.compartmentId // "N/A"' "$config_file")
+    availability_domain=$(jq -r '.availabilityDomain // "N/A"' "$config_file")
+    subnet_id=$(jq -r '.subnetId // "N/A"' "$config_file")
+    image_id=$(jq -r '.imageId // "N/A"' "$config_file")
+    image_os=$(jq -r '.imageOperatingSystem // "N/A"' "$config_file")
+    image_os_version=$(jq -r '.imageOperatingSystemVersion // "N/A"' "$config_file")
+    shape=$(jq -r '.shape // "N/A"' "$config_file")
+    display_name=$(jq -r '.displayName // "N/A"' "$config_file")
+    assign_public_ip=$(jq -r '.assignPublicIp // "N/A"' "$config_file")
+    ssh_public_key=$(jq -r '.sshAuthorizedKeysFile // "N/A"' "$config_file")
+    boot_volume_size=$(jq -r '.bootVolumeSizeInGBs // "N/A"' "$config_file")
+    boot_volume_vpus_per_gb=$(jq -r '.bootVolumeVpusPerGB // "N/A"' "$config_file")
+    ocpus=$(jq -r '.ocpus // "N/A"' "$config_file")
+    memory_gbs=$(jq -r '.memoryInGBs // "N/A"' "$config_file")
+    retry_interval=$(jq -r '.retryInterval // 30' "$config_file")
+
+    echo ""
+    echo -e "${BOLD}创建实例配置摘要${NC}"
+    echo "----------------------------------------"
+    echo "配置文件:      $config_file"
+    echo "区间 OCID:     ${compartment_id:0:50}..."
+    echo "可用性域:      $availability_domain"
+    echo "子网 OCID:     ${subnet_id:0:50}..."
+    echo "镜像系统:      $image_os"
+    [[ -n "$image_os_version" && "$image_os_version" != "N/A" ]] && echo "系统版本:      $image_os_version"
+    echo "镜像 OCID:     ${image_id:0:50}..."
+    echo "实例规格:      $shape"
+    if [[ "$shape" == *"Flex"* ]]; then
+        echo "OCPU:          $ocpus"
+        echo "内存(GB):      $memory_gbs"
+    fi
+    echo "实例名称:      $display_name"
+    echo "SSH 公钥:      $ssh_public_key"
+    echo "公网 IP:       $assign_public_ip"
+    echo "启动盘(GB):    $boot_volume_size"
+    echo "启动盘性能:    ${boot_volume_vpus_per_gb} VPU/GB"
+    echo "重试间隔(秒):  $retry_interval"
+    echo "----------------------------------------"
+    echo ""
+}
+
+save_create_instance_config() {
+    local config_file="$1"
+    local compartment_id="$2"
+    local availability_domain="$3"
+    local subnet_id="$4"
+    local image_id="$5"
+    local image_os="$6"
+    local image_os_version="$7"
+    local ssh_public_key="$8"
+    local shape="$9"
+    local ocpus="${10}"
+    local memory_gbs="${11}"
+    local boot_volume_size="${12}"
+    local boot_volume_vpus_per_gb="${13}"
+    local display_name="${14}"
+    local assign_public_ip="${15}"
+    local retry_interval="${16}"
+
+    local ocpus_json="null"
+    local memory_json="null"
+    local boot_json="null"
+    local boot_vpus_json="null"
+
+    if [[ -n "$ocpus" ]]; then
+        ocpus_json="$ocpus"
+    fi
+    if [[ -n "$memory_gbs" ]]; then
+        memory_json="$memory_gbs"
+    fi
+    if [[ -n "$boot_volume_size" ]]; then
+        boot_json="$boot_volume_size"
+    fi
+    if [[ -n "$boot_volume_vpus_per_gb" ]]; then
+        boot_vpus_json="$boot_volume_vpus_per_gb"
+    fi
+
+    jq -n \
+        --arg compartment_id "$compartment_id" \
+        --arg availability_domain "$availability_domain" \
+        --arg subnet_id "$subnet_id" \
+        --arg image_id "$image_id" \
+        --arg image_os "$image_os" \
+        --arg image_os_version "$image_os_version" \
+        --arg ssh_key "$ssh_public_key" \
+        --arg shape "$shape" \
+        --arg display_name "$display_name" \
+        --argjson assign_public_ip "$assign_public_ip" \
+        --argjson ocpus "$ocpus_json" \
+        --argjson memory_gbs "$memory_json" \
+        --argjson boot_volume_size "$boot_json" \
+        --argjson boot_volume_vpus_per_gb "$boot_vpus_json" \
+        --argjson retry_interval "$retry_interval" \
+        '{
+            compartmentId: $compartment_id,
+            availabilityDomain: $availability_domain,
+            subnetId: $subnet_id,
+            imageId: $image_id,
+            imageOperatingSystem: $image_os,
+            imageOperatingSystemVersion: $image_os_version,
+            sshAuthorizedKeysFile: $ssh_key,
+            shape: $shape,
+            ocpus: $ocpus,
+            memoryInGBs: $memory_gbs,
+            bootVolumeSizeInGBs: $boot_volume_size,
+            bootVolumeVpusPerGB: $boot_volume_vpus_per_gb,
+            displayName: $display_name,
+            assignPublicIp: $assign_public_ip,
+            retryInterval: $retry_interval
+        }' > "$config_file"
+}
+
+autosave_create_instance_progress() {
+    local config_file="$1"
+    local compartment_id="$2"
+    local availability_domain="$3"
+    local subnet_id="$4"
+    local image_id="$5"
+    local image_os="$6"
+    local image_os_version="$7"
+    local ssh_public_key="$8"
+    local shape="$9"
+    local ocpus="${10}"
+    local memory_gbs="${11}"
+    local boot_volume_size="${12}"
+    local boot_volume_vpus_per_gb="${13}"
+    local display_name="${14}"
+    local assign_public_ip="${15}"
+    local retry_interval="${16}"
+
+    local temp_file="${config_file}.autosave"
+    save_create_instance_config \
+        "$temp_file" \
+        "$compartment_id" \
+        "$availability_domain" \
+        "$subnet_id" \
+        "$image_id" \
+        "$image_os" \
+        "$image_os_version" \
+        "$ssh_public_key" \
+        "$shape" \
+        "$ocpus" \
+        "$memory_gbs" \
+        "$boot_volume_size" \
+        "$boot_volume_vpus_per_gb" \
+        "$display_name" \
+        "$assign_public_ip" \
+        "$retry_interval"
+    mv "$temp_file" "$config_file"
+}
+
+get_create_instance_resume_file() {
+    if [[ -f "$CREATE_INSTANCE_DRAFT_CONFIG" ]] && jq empty "$CREATE_INSTANCE_DRAFT_CONFIG" >/dev/null 2>&1; then
+        echo "$CREATE_INSTANCE_DRAFT_CONFIG"
+    else
+        echo "$CREATE_INSTANCE_CONFIG"
+    fi
+}
+
+configure_create_instance_params() {
+    local config_file="$CREATE_INSTANCE_CONFIG"
+    local draft_file="$CREATE_INSTANCE_DRAFT_CONFIG"
+    local resume_file
+
+    show_header
+    echo -e "${BOLD}[5] 创建实例 - 获取关键参数并保存${NC}"
+    echo "========================================"
+    echo ""
+
+    if ! check_oci_cli; then
+        pause
+        return 1
+    fi
+
+    if ! check_oci_config; then
+        pause
+        return 1
+    fi
+
+    trap 'echo -e "\n${YELLOW}已中断，当前创建实例参数进度已自动保存到: ${draft_file}${NC}"; trap '\''echo -e "\n${YELLOW}操作已取消${NC}"; exit 0'\'' INT TERM; return 130 2>/dev/null || exit 130' INT TERM
+
+    resume_file="$(get_create_instance_resume_file)"
+    load_create_instance_defaults "$resume_file"
+
+    echo "正式配置路径: $config_file"
+    echo "草稿路径:     $draft_file"
+    if [[ -f "$draft_file" ]]; then
+        echo -e "${GREEN}✓${NC} 检测到未完成草稿，将从草稿继续"
+    elif [[ -f "$config_file" ]]; then
+        echo -e "${GREEN}✓${NC} 检测到已确认配置，将作为默认值"
+    else
+        echo -e "${YELLOW}!${NC} 尚未保存创建配置，将生成新的配置文件"
+    fi
+    echo -e "${CYAN}提示: 本流程会自动保存到草稿文件，只有确认完成时才会更新正式配置${NC}"
+    echo ""
+
+    local compartment_id availability_domain subnet_id image_id image_os image_os_version ssh_public_key
+    local shape ocpus memory_gbs boot_volume_size boot_volume_vpus_per_gb display_name assign_public_ip retry_interval vcn_id
+    local input_value lookup_mode
+
+    read -p "区间 OCID [默认: ${CREATE_COMPARTMENT_ID}]: " input_value
+    compartment_id="${input_value:-$CREATE_COMPARTMENT_ID}"
+    while [[ -z "$compartment_id" || ! "$compartment_id" =~ ^ocid1\. ]]; do
+        echo -e "${RED}无效的区间 OCID${NC}"
+        read -p "区间 OCID: " compartment_id
+    done
+    autosave_create_instance_progress "$draft_file" "$compartment_id" "$CREATE_AVAILABILITY_DOMAIN" "$CREATE_SUBNET_ID" "$CREATE_IMAGE_ID" "$CREATE_IMAGE_OS" "$CREATE_IMAGE_OS_VERSION" "$CREATE_SSH_PUBLIC_KEY" "$CREATE_SHAPE" "$CREATE_OCPUS" "$CREATE_MEMORY_GB" "$CREATE_BOOT_VOLUME_SIZE" "$CREATE_BOOT_VOLUME_VPUS_PER_GB" "$CREATE_DISPLAY_NAME" "$CREATE_ASSIGN_PUBLIC_IP" "$CREATE_RETRY_INTERVAL"
+
+    echo ""
+    echo "可用性域获取方式:"
+    echo "  1) 查询并选择"
+    echo "  2) 手动输入"
+    read_choice_with_default_label lookup_mode "请选择" "1" "查询并选择"
+    if [[ "$lookup_mode" == "1" ]] && query_availability_domains "$CREATE_AVAILABILITY_DOMAIN"; then
+        availability_domain="$SELECT_RESULT"
+    else
+        read -p "可用性域 [默认: ${CREATE_AVAILABILITY_DOMAIN}]: " input_value
+        availability_domain="${input_value:-$CREATE_AVAILABILITY_DOMAIN}"
+    fi
+    while [[ -z "$availability_domain" ]]; do
+        echo -e "${RED}可用性域不能为空${NC}"
+        read -p "可用性域: " availability_domain
+    done
+    autosave_create_instance_progress "$draft_file" "$compartment_id" "$availability_domain" "$CREATE_SUBNET_ID" "$CREATE_IMAGE_ID" "$CREATE_IMAGE_OS" "$CREATE_IMAGE_OS_VERSION" "$CREATE_SSH_PUBLIC_KEY" "$CREATE_SHAPE" "$CREATE_OCPUS" "$CREATE_MEMORY_GB" "$CREATE_BOOT_VOLUME_SIZE" "$CREATE_BOOT_VOLUME_VPUS_PER_GB" "$CREATE_DISPLAY_NAME" "$CREATE_ASSIGN_PUBLIC_IP" "$CREATE_RETRY_INTERVAL"
+
+    echo ""
+    echo "实例规格获取方式:"
+    echo "  1) 查询并选择"
+    echo "  2) 手动输入"
+    read_choice_with_default_label lookup_mode "请选择" "1" "查询并选择"
+    if [[ "$lookup_mode" == "1" ]] && query_shapes "$compartment_id" "$availability_domain" "$CREATE_SHAPE"; then
+        shape="$SELECT_RESULT"
+    else
+        read -p "实例规格 [默认: ${CREATE_SHAPE}]: " input_value
+        shape="${input_value:-$CREATE_SHAPE}"
+    fi
+    while [[ -z "$shape" ]]; do
+        echo -e "${RED}实例规格不能为空${NC}"
+        read -p "实例规格: " shape
+    done
+
+    ocpus=""
+    memory_gbs=""
+    if [[ "$shape" == *"Flex"* ]]; then
+        read -p "OCPU 数量 [默认: ${CREATE_OCPUS}]: " input_value
+        ocpus="${input_value:-$CREATE_OCPUS}"
+        while [[ ! "$ocpus" =~ ^[0-9]+([.][0-9]+)?$ ]]; do
+            echo -e "${RED}请输入有效的 OCPU 数值${NC}"
+            read -p "OCPU 数量: " ocpus
+        done
+
+        read -p "内存 (GB) [默认: ${CREATE_MEMORY_GB}]: " input_value
+        memory_gbs="${input_value:-$CREATE_MEMORY_GB}"
+        while [[ ! "$memory_gbs" =~ ^[0-9]+([.][0-9]+)?$ ]]; do
+            echo -e "${RED}请输入有效的内存数值${NC}"
+            read -p "内存 (GB): " memory_gbs
+        done
+    fi
+    autosave_create_instance_progress "$draft_file" "$compartment_id" "$availability_domain" "$CREATE_SUBNET_ID" "$CREATE_IMAGE_ID" "$CREATE_IMAGE_OS" "$CREATE_IMAGE_OS_VERSION" "$CREATE_SSH_PUBLIC_KEY" "$shape" "$ocpus" "$memory_gbs" "$CREATE_BOOT_VOLUME_SIZE" "$CREATE_BOOT_VOLUME_VPUS_PER_GB" "$CREATE_DISPLAY_NAME" "$CREATE_ASSIGN_PUBLIC_IP" "$CREATE_RETRY_INTERVAL"
+
+    echo ""
+    echo "子网获取方式:"
+    echo "  1) 查询并选择"
+    echo "  2) 手动输入"
+    echo "  3) 新建子网"
+    read_choice_with_default_label lookup_mode "请选择" "1" "查询并选择"
+    if [[ "$lookup_mode" == "1" ]]; then
+        read -p "VCN OCID（可选，留空则列出区间内全部子网）: " vcn_id
+        if query_subnets "$compartment_id" "$vcn_id" "$CREATE_SUBNET_ID"; then
+            subnet_id="$SELECT_RESULT"
+        else
+            echo ""
+            log_warn "未查询到可用子网，或未选择子网"
+            read -p "是否现在新建一个子网? [Y/n]: " -r
+            [[ -z "$REPLY" ]] && REPLY="y"
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                if create_subnet_interactive "$compartment_id" "$availability_domain"; then
+                    subnet_id="$SELECT_RESULT"
+                fi
+            fi
+        fi
+    elif [[ "$lookup_mode" == "3" ]]; then
+        if create_subnet_interactive "$compartment_id" "$availability_domain"; then
+            subnet_id="$SELECT_RESULT"
+        fi
+    fi
+    if [[ -z "$subnet_id" ]]; then
+        read -p "子网 OCID [默认: ${CREATE_SUBNET_ID}]: " input_value
+        subnet_id="${input_value:-$CREATE_SUBNET_ID}"
+    fi
+    while [[ -z "$subnet_id" || ! "$subnet_id" =~ ^ocid1\.subnet\.oc1\. ]]; do
+        echo -e "${RED}无效的子网 OCID${NC}"
+        read -p "子网 OCID: " subnet_id
+    done
+    autosave_create_instance_progress "$draft_file" "$compartment_id" "$availability_domain" "$subnet_id" "$CREATE_IMAGE_ID" "$CREATE_IMAGE_OS" "$CREATE_IMAGE_OS_VERSION" "$CREATE_SSH_PUBLIC_KEY" "$shape" "$ocpus" "$memory_gbs" "$CREATE_BOOT_VOLUME_SIZE" "$CREATE_BOOT_VOLUME_VPUS_PER_GB" "$CREATE_DISPLAY_NAME" "$CREATE_ASSIGN_PUBLIC_IP" "$CREATE_RETRY_INTERVAL"
+
+    echo ""
+    echo "镜像获取方式:"
+    echo "  1) 查询并选择"
+    echo "  2) 手动输入"
+    read_choice_with_default_label lookup_mode "请选择" "1" "查询并选择"
+    image_os="$CREATE_IMAGE_OS"
+    image_os_version="$CREATE_IMAGE_OS_VERSION"
+    if [[ "$lookup_mode" == "1" ]]; then
+        if query_image_operating_systems "$compartment_id" "$CREATE_IMAGE_OS"; then
+            image_os="$SELECT_RESULT"
+        else
+            read -p "操作系统名称 [默认: ${CREATE_IMAGE_OS}]: " input_value
+            image_os="${input_value:-$CREATE_IMAGE_OS}"
+        fi
+        echo "已选择操作系统: $image_os"
+        if query_image_operating_system_versions "$compartment_id" "$image_os" "$CREATE_IMAGE_OS_VERSION"; then
+            image_os_version="$SELECT_RESULT"
+        else
+            read -p "操作系统版本 [默认: ${CREATE_IMAGE_OS_VERSION:-自动选择}]: " input_value
+            image_os_version="${input_value:-$CREATE_IMAGE_OS_VERSION}"
+        fi
+        [[ -n "$image_os_version" ]] && echo "已选择系统版本: $image_os_version"
+        if query_images "$compartment_id" "$image_os" "$image_os_version" "$shape" "$CREATE_IMAGE_ID"; then
+            image_id="$SELECT_RESULT"
+        fi
+    fi
+    if [[ -z "$image_id" ]]; then
+        read -p "镜像 OCID [默认: ${CREATE_IMAGE_ID}]: " input_value
+        image_id="${input_value:-$CREATE_IMAGE_ID}"
+    fi
+    while [[ -z "$image_id" || ! "$image_id" =~ ^ocid1\.image\.oc1\. ]]; do
+        echo -e "${RED}无效的镜像 OCID${NC}"
+        read -p "镜像 OCID: " image_id
+    done
+    autosave_create_instance_progress "$draft_file" "$compartment_id" "$availability_domain" "$subnet_id" "$image_id" "$image_os" "$image_os_version" "$CREATE_SSH_PUBLIC_KEY" "$shape" "$ocpus" "$memory_gbs" "$CREATE_BOOT_VOLUME_SIZE" "$CREATE_BOOT_VOLUME_VPUS_PER_GB" "$CREATE_DISPLAY_NAME" "$CREATE_ASSIGN_PUBLIC_IP" "$CREATE_RETRY_INTERVAL"
+
+    read -p "SSH 公钥文件 [默认: ${CREATE_SSH_PUBLIC_KEY}]: " input_value
+    ssh_public_key="${input_value:-$CREATE_SSH_PUBLIC_KEY}"
+    while [[ ! -f "$(expand_path "$ssh_public_key")" ]]; do
+        echo -e "${RED}SSH 公钥文件不存在: $(expand_path "$ssh_public_key")${NC}"
+        read -p "SSH 公钥文件: " ssh_public_key
+    done
+    autosave_create_instance_progress "$draft_file" "$compartment_id" "$availability_domain" "$subnet_id" "$image_id" "$image_os" "$image_os_version" "$ssh_public_key" "$shape" "$ocpus" "$memory_gbs" "$CREATE_BOOT_VOLUME_SIZE" "$CREATE_BOOT_VOLUME_VPUS_PER_GB" "$CREATE_DISPLAY_NAME" "$CREATE_ASSIGN_PUBLIC_IP" "$CREATE_RETRY_INTERVAL"
+
+    read -p "实例名称 [默认: ${CREATE_DISPLAY_NAME}]: " input_value
+    display_name="${input_value:-$CREATE_DISPLAY_NAME}"
+    while [[ -z "$display_name" ]]; do
+        echo -e "${RED}实例名称不能为空${NC}"
+        read -p "实例名称: " display_name
+    done
+    autosave_create_instance_progress "$draft_file" "$compartment_id" "$availability_domain" "$subnet_id" "$image_id" "$image_os" "$image_os_version" "$ssh_public_key" "$shape" "$ocpus" "$memory_gbs" "$CREATE_BOOT_VOLUME_SIZE" "$CREATE_BOOT_VOLUME_VPUS_PER_GB" "$display_name" "$CREATE_ASSIGN_PUBLIC_IP" "$CREATE_RETRY_INTERVAL"
+
+    read -p "分配公网 IP? [true/false，默认: ${CREATE_ASSIGN_PUBLIC_IP}]: " input_value
+    assign_public_ip="${input_value:-$CREATE_ASSIGN_PUBLIC_IP}"
+    while [[ "$assign_public_ip" != "true" && "$assign_public_ip" != "false" ]]; do
+        echo -e "${RED}请输入 true 或 false${NC}"
+        read -p "分配公网 IP? [true/false]: " assign_public_ip
+    done
+    autosave_create_instance_progress "$draft_file" "$compartment_id" "$availability_domain" "$subnet_id" "$image_id" "$image_os" "$image_os_version" "$ssh_public_key" "$shape" "$ocpus" "$memory_gbs" "$CREATE_BOOT_VOLUME_SIZE" "$CREATE_BOOT_VOLUME_VPUS_PER_GB" "$display_name" "$assign_public_ip" "$CREATE_RETRY_INTERVAL"
+
+    read -p "启动盘大小 (GB) [默认: ${CREATE_BOOT_VOLUME_SIZE}，留空表示不指定]: " input_value
+    boot_volume_size="${input_value:-$CREATE_BOOT_VOLUME_SIZE}"
+    if [[ -n "$boot_volume_size" ]]; then
+        while [[ ! "$boot_volume_size" =~ ^[0-9]+$ || "$boot_volume_size" -lt 1 || "$boot_volume_size" -gt 32768 ]]; do
+            echo -e "${RED}请输入有效的启动盘大小，范围 1-32768 GB${NC}"
+            read -p "启动盘大小 (GB): " boot_volume_size
+        done
+    fi
+    autosave_create_instance_progress "$draft_file" "$compartment_id" "$availability_domain" "$subnet_id" "$image_id" "$image_os" "$image_os_version" "$ssh_public_key" "$shape" "$ocpus" "$memory_gbs" "$boot_volume_size" "$CREATE_BOOT_VOLUME_VPUS_PER_GB" "$display_name" "$assign_public_ip" "$CREATE_RETRY_INTERVAL"
+
+    read -p "启动盘性能 (VPU/GB) [默认: ${CREATE_BOOT_VOLUME_VPUS_PER_GB}，支持 10-120 且为 10 的倍数]: " input_value
+    boot_volume_vpus_per_gb="${input_value:-$CREATE_BOOT_VOLUME_VPUS_PER_GB}"
+    while [[ ! "$boot_volume_vpus_per_gb" =~ ^[0-9]+$ || "$boot_volume_vpus_per_gb" -lt 10 || "$boot_volume_vpus_per_gb" -gt 120 || $((boot_volume_vpus_per_gb % 10)) -ne 0 ]]; do
+        echo -e "${RED}请输入有效的启动盘性能，范围 10-120 且必须是 10 的倍数${NC}"
+        read -p "启动盘性能 (VPU/GB): " boot_volume_vpus_per_gb
+    done
+    autosave_create_instance_progress "$draft_file" "$compartment_id" "$availability_domain" "$subnet_id" "$image_id" "$image_os" "$image_os_version" "$ssh_public_key" "$shape" "$ocpus" "$memory_gbs" "$boot_volume_size" "$boot_volume_vpus_per_gb" "$display_name" "$assign_public_ip" "$CREATE_RETRY_INTERVAL"
+
+    read -p "后台重试间隔 (秒) [默认: ${CREATE_RETRY_INTERVAL}]: " input_value
+    retry_interval="${input_value:-$CREATE_RETRY_INTERVAL}"
+    while [[ ! "$retry_interval" =~ ^[0-9]+$ ]]; do
+        echo -e "${RED}请输入有效的重试间隔${NC}"
+        read -p "后台重试间隔 (秒): " retry_interval
+    done
+    autosave_create_instance_progress "$draft_file" "$compartment_id" "$availability_domain" "$subnet_id" "$image_id" "$image_os" "$image_os_version" "$ssh_public_key" "$shape" "$ocpus" "$memory_gbs" "$boot_volume_size" "$boot_volume_vpus_per_gb" "$display_name" "$assign_public_ip" "$retry_interval"
+
+    echo ""
+    echo -e "${CYAN}当前草稿预览:${NC}"
+    show_create_instance_config_summary "$draft_file"
+    read -p "确认完成本次设置? [Y/n]: " -r
+    [[ -z "$REPLY" ]] && REPLY="y"
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        log_info "本次设置未确认，但当前进度已自动保存在草稿: $draft_file"
+        trap 'echo -e "\n${YELLOW}操作已取消${NC}"; exit 0' INT TERM
+        pause
+        return 0
+    fi
+
+    cp "$draft_file" "$config_file"
+    rm -f "$draft_file"
+    log_success "创建实例配置已保存到: $config_file"
+    trap 'echo -e "\n${YELLOW}操作已取消${NC}"; exit 0' INT TERM
+    pause
+}
+
+show_saved_create_instance_config() {
+    show_header
+    echo -e "${BOLD}[5] 创建实例 - 查看已保存配置${NC}"
+    echo "========================================"
+    echo ""
+
+    local has_any=false
+
+    if [[ -f "$CREATE_INSTANCE_CONFIG" ]]; then
+        echo -e "${GREEN}已确认配置${NC}"
+        show_create_instance_config_summary "$CREATE_INSTANCE_CONFIG"
+        echo -e "${BOLD}JSON 内容预览:${NC}"
+        echo "----------------------------------------"
+        jq '.' "$CREATE_INSTANCE_CONFIG"
+        echo "----------------------------------------"
+        echo ""
+        has_any=true
+    fi
+
+    if [[ -f "$CREATE_INSTANCE_DRAFT_CONFIG" ]]; then
+        echo -e "${YELLOW}未完成草稿${NC}"
+        show_create_instance_config_summary "$CREATE_INSTANCE_DRAFT_CONFIG"
+        echo -e "${BOLD}JSON 内容预览:${NC}"
+        echo "----------------------------------------"
+        jq '.' "$CREATE_INSTANCE_DRAFT_CONFIG"
+        echo "----------------------------------------"
+        echo ""
+        has_any=true
+    fi
+
+    if [[ "$has_any" != "true" ]]; then
+        log_warn "尚未找到已确认配置或草稿配置"
+        pause
+        return 1
+    fi
+
+    pause
+}
+
+launch_instance_from_config() {
+    local config_file="$1"
+
+    if ! validate_create_instance_config "$config_file"; then
+        return 1
+    fi
+
+    local compartment_id availability_domain subnet_id image_id ssh_public_key shape display_name assign_public_ip
+    local ocpus memory_gbs boot_volume_size boot_volume_vpus_per_gb
+    compartment_id=$(jq -r '.compartmentId' "$config_file")
+    availability_domain=$(jq -r '.availabilityDomain' "$config_file")
+    subnet_id=$(jq -r '.subnetId' "$config_file")
+    image_id=$(jq -r '.imageId' "$config_file")
+    ssh_public_key="$(expand_path "$(jq -r '.sshAuthorizedKeysFile' "$config_file")")"
+    shape=$(jq -r '.shape' "$config_file")
+    display_name=$(jq -r '.displayName' "$config_file")
+    assign_public_ip=$(jq -r '.assignPublicIp' "$config_file")
+    ocpus=$(jq -r '.ocpus // empty' "$config_file")
+    memory_gbs=$(jq -r '.memoryInGBs // empty' "$config_file")
+    boot_volume_size=$(jq -r '.bootVolumeSizeInGBs // empty' "$config_file")
+    boot_volume_vpus_per_gb=$(jq -r '.bootVolumeVpusPerGB // empty' "$config_file")
+
+    local cmd=(
+        oci compute instance launch
+        --compartment-id "$compartment_id"
+        --availability-domain "$availability_domain"
+        --shape "$shape"
+        --subnet-id "$subnet_id"
+        --ssh-authorized-keys-file "$ssh_public_key"
+        --display-name "$display_name"
+        --assign-public-ip "$assign_public_ip"
+        --wait-for-state RUNNING
+        --wait-interval-seconds 10
+        --output json
+    )
+
+    local source_details_json
+    source_details_json=$(jq -cn \
+        --arg image_id "$image_id" \
+        --arg boot_volume_size "$boot_volume_size" \
+        --arg boot_volume_vpus_per_gb "$boot_volume_vpus_per_gb" \
+        '{
+            sourceType: "image",
+            imageId: $image_id
+        }
+        + (if $boot_volume_size != "" and $boot_volume_size != "null" then {bootVolumeSizeInGBs: ($boot_volume_size | tonumber)} else {} end)
+        + (if $boot_volume_vpus_per_gb != "" and $boot_volume_vpus_per_gb != "null" then {bootVolumeVpusPerGB: ($boot_volume_vpus_per_gb | tonumber)} else {} end)')
+    cmd+=(--source-details "$source_details_json")
+
+    if [[ "$shape" == *"Flex"* ]]; then
+        local shape_config_json
+        shape_config_json=$(jq -cn \
+            --arg ocpus "$ocpus" \
+            --arg memory_gbs "$memory_gbs" \
+            '{
+                ocpus: ($ocpus | tonumber),
+                memory_in_gbs: ($memory_gbs | tonumber)
+            }')
+        cmd+=(--shape-config "$shape_config_json")
+    fi
+
+    "${cmd[@]}"
+}
+
+send_create_success_notification() {
+    local config_file="$1"
+    local instance_id="$2"
+    local display_name shape ocpus memory_gbs
+    display_name=$(jq -r '.displayName // "N/A"' "$config_file")
+    shape=$(jq -r '.shape // "N/A"' "$config_file")
+    ocpus=$(jq -r '.ocpus // "N/A"' "$config_file")
+    memory_gbs=$(jq -r '.memoryInGBs // "N/A"' "$config_file")
+
+    send_email_notification \
+        "OCI 实例创建成功" \
+        "实例 ${display_name} 创建成功\n\n实例 OCID: ${instance_id}\n规格: ${shape}\nOCPU: ${ocpus}\n内存: ${memory_gbs} GB\n时间: $(date '+%Y-%m-%d %H:%M:%S')"
+}
+
+show_created_instance_summary() {
+    local instance_id="$1"
+
+    if [[ -z "$instance_id" || "$instance_id" == "null" ]]; then
+        return 0
+    fi
+
+    local detail_json
+    detail_json=$(oci compute instance get \
+        --instance-id "$instance_id" \
+        --output json 2>/dev/null)
+
+    local display_name="N/A"
+    local lifecycle_state="N/A"
+    local shape="N/A"
+    if [[ -n "$detail_json" ]]; then
+        display_name=$(echo "$detail_json" | jq -r '.data["display-name"] // "N/A"' 2>/dev/null)
+        lifecycle_state=$(echo "$detail_json" | jq -r '.data["lifecycle-state"] // "N/A"' 2>/dev/null)
+        shape=$(echo "$detail_json" | jq -r '.data.shape // "N/A"' 2>/dev/null)
+    fi
+
+    local vnics_json
+    local private_ip="N/A"
+    local public_ip="N/A"
+    vnics_json=$(oci compute instance list-vnics \
+        --instance-id "$instance_id" \
+        --output json 2>/dev/null)
+
+    if [[ -n "$vnics_json" ]]; then
+        private_ip=$(echo "$vnics_json" | jq -r '.data[0]["private-ip"] // "N/A"' 2>/dev/null)
+        public_ip=$(echo "$vnics_json" | jq -r '.data[0]["public-ip"] // "N/A"' 2>/dev/null)
+    fi
+
+    echo ""
+    echo -e "${BOLD}实例创建结果摘要${NC}"
+    echo "----------------------------------------"
+    echo "实例名称:      $display_name"
+    echo "实例 OCID:     $instance_id"
+    echo "实例状态:      $lifecycle_state"
+    echo "实例规格:      $shape"
+    echo "私网 IP:       $private_ip"
+    echo "公网 IP:       $public_ip"
+    echo "----------------------------------------"
+    echo ""
+}
+
+check_existing_create_task() {
+    local display_name="$1"
+
+    init_task_dir
+
+    for task_path in "$TASK_DIR"/*; do
+        [[ ! -d "$task_path" ]] && continue
+
+        local task_info="$task_path/task.info"
+        [[ ! -f "$task_info" ]] && continue
+
+        local task_type task_status task_display_name
+        task_type=$(jq -r '.task_type // empty' "$task_info" 2>/dev/null)
+        task_status=$(jq -r '.status // empty' "$task_info" 2>/dev/null)
+        task_display_name=$(jq -r '.display_name // empty' "$task_info" 2>/dev/null)
+
+        if [[ "$task_type" == "create_instance" && "$task_status" == "running" && "$task_display_name" == "$display_name" ]]; then
+            local pid_file="$task_path/task.pid"
+            if [[ -f "$pid_file" ]]; then
+                local pid
+                pid=$(cat "$pid_file" 2>/dev/null)
+                if kill -0 "$pid" 2>/dev/null; then
+                    local task_id
+                    task_id=$(jq -r '.task_id // empty' "$task_info" 2>/dev/null)
+                    echo ""
+                    log_warn "检测到同名实例创建任务仍在运行"
+                    echo "  任务 ID: $task_id"
+                    echo "  实例名称: $display_name"
+                    echo ""
+                    read -p "是否停止现有任务并创建新任务? [y/N]: " -r
+                    [[ -z "$REPLY" ]] && REPLY="n"
+                    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                        log_info "操作已取消"
+                        return 1
+                    fi
+
+                    stop_task "$task_id"
+                    break
+                fi
+            fi
+        fi
+    done
+
+    return 0
+}
+
+create_instance_background_task() {
+    local config_file="${1:-$CREATE_INSTANCE_CONFIG}"
+    local retry_interval="${2:-30}"
+
+    if [[ ! "$retry_interval" =~ ^[0-9]+$ ]]; then
+        log_error "重试间隔必须为正整数"
+        return 1
+    fi
+
+    if ! validate_create_instance_config "$config_file"; then
+        return 1
+    fi
+
+    local display_name shape target_ocpus target_memory compartment_id
+    display_name=$(jq -r '.displayName // "N/A"' "$config_file")
+    shape=$(jq -r '.shape // "N/A"' "$config_file")
+    target_ocpus=$(jq -r '.ocpus // null' "$config_file")
+    target_memory=$(jq -r '.memoryInGBs // null' "$config_file")
+    compartment_id=$(jq -r '.compartmentId // ""' "$config_file")
+
+    if ! check_existing_create_task "$display_name"; then
+        return 1
+    fi
+
+    init_task_dir
+
+    local task_id
+    task_id="$(date +%Y%m%d-%H%M%S)_$$"
+    local task_path="$TASK_DIR/$task_id"
+    mkdir -p "$task_path"
+
+    jq -n \
+        --arg task_id "$task_id" \
+        --arg task_type "create_instance" \
+        --arg config_file "$config_file" \
+        --arg display_name "$display_name" \
+        --arg shape "$shape" \
+        --arg compartment_id "$compartment_id" \
+        --argjson target_ocpus "$target_ocpus" \
+        --argjson target_memory "$target_memory" \
+        --argjson retry_interval "$retry_interval" \
+        --arg create_time "$(date -Iseconds)" \
+        '{
+            task_id: $task_id,
+            task_type: $task_type,
+            config_file: $config_file,
+            display_name: $display_name,
+            shape: $shape,
+            compartment_id: $compartment_id,
+            target_ocpus: $target_ocpus,
+            target_memory: $target_memory,
+            retry_interval: $retry_interval,
+            create_time: $create_time,
+            status: "running"
+        }' > "$task_path/task.info"
+
+    (
+        exec_create_instance_task "$task_id" "$config_file" "$retry_interval"
+    ) &>"$task_path/task.log" &
+
+    local pid=$!
+    echo "$pid" > "$task_path/task.pid"
+
+    log_success "创建实例后台任务已创建"
+    echo ""
+    echo "任务 ID: $task_id"
+    echo "实例名称: $display_name"
+    echo "日志文件: $task_path/task.log"
+    echo ""
+    echo -e "${CYAN}提示: 任务将在后台持续执行，可在主菜单“管理后台任务”中查看进度${NC}"
+    echo ""
+}
+
+exec_create_instance_task() {
+    local task_id="$1"
+    local config_file="$2"
+    local retry_interval="$3"
+    local task_path="$TASK_DIR/$task_id"
+    local log_file="$task_path/task.log"
+
+    log_info() {
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] $1" >> "$log_file"
+    }
+
+    log_error() {
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] $1" >> "$log_file"
+    }
+
+    log_success() {
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [SUCCESS] $1" >> "$log_file"
+    }
+
+    update_task_status() {
+        local attempt="$1"
+        local last_status="$2"
+        local last_error="$3"
+        local created_instance_id="$4"
+
+        if [[ -f "$task_path/task.info" ]]; then
+            local temp_file="$task_path/task.info.tmp"
+            jq --argjson attempt "$attempt" \
+               --arg status "$last_status" \
+               --arg error "$last_error" \
+               --arg created_instance_id "$created_instance_id" \
+               --arg time "$(date -Iseconds)" \
+               '.attempt = $attempt |
+                .last_status = $status |
+                .last_error = $error |
+                .last_attempt_time = $time |
+                .created_instance_ocid = (if $created_instance_id == "" then .created_instance_ocid else $created_instance_id end)' \
+               "$task_path/task.info" > "$temp_file"
+            mv "$temp_file" "$task_path/task.info"
+        fi
+    }
+
+    if ! validate_create_instance_config "$config_file"; then
+        update_task_status 0 "failed" "配置文件校验失败" ""
+        jq '.status = "failed" | .end_time = "'"$(date -Iseconds)"'"' \
+            "$task_path/task.info" > "$task_path/task.info.tmp"
+        mv "$task_path/task.info.tmp" "$task_path/task.info"
+        exit 1
+    fi
+
+    local display_name
+    display_name=$(jq -r '.displayName // "N/A"' "$config_file")
+    local attempt
+    attempt=$(jq -r '.attempt // 0' "$task_path/task.info")
+
+    log_info "后台创建实例任务启动"
+    log_info "实例名称: $display_name"
+    log_info "配置文件: $config_file"
+    log_info "重试间隔: ${retry_interval}秒"
+
+    while true; do
+        ((attempt++))
+        log_info "第 $attempt 次尝试创建实例..."
+
+        local result
+        result=$(launch_instance_from_config "$config_file" 2>&1)
+        local exit_code=$?
+
+        if [[ $exit_code -eq 0 ]]; then
+            local instance_id
+            instance_id=$(echo "$result" | jq -r '.data.id // empty' 2>/dev/null)
+            log_success "实例创建成功"
+            [[ -n "$instance_id" ]] && log_info "实例 OCID: $instance_id"
+            [[ -n "$instance_id" ]] && show_created_instance_summary "$instance_id"
+            update_task_status "$attempt" "success" "" "$instance_id"
+            jq '.status = "completed" | .end_time = "'"$(date -Iseconds)"'"' \
+                "$task_path/task.info" > "$task_path/task.info.tmp"
+            mv "$task_path/task.info.tmp" "$task_path/task.info"
+            send_create_success_notification "$config_file" "$instance_id"
+            exit 0
+        fi
+
+        local error_msg
+        error_msg=$(echo "$result" | jq -r '.message // .error.message // empty' 2>/dev/null)
+        [[ -z "$error_msg" ]] && error_msg="$result"
+        log_error "实例创建失败: $error_msg"
+        update_task_status "$attempt" "failed" "$error_msg" ""
+        log_info "等待 ${retry_interval} 秒后重试..."
+        sleep "$retry_interval"
+    done
+}
+
+create_instance_from_saved_config() {
+    local config_file="$CREATE_INSTANCE_CONFIG"
+
+    show_header
+    echo -e "${BOLD}[5] 创建实例 - 使用已保存配置${NC}"
+    echo "========================================"
+    echo ""
+
+    if ! check_oci_cli; then
+        pause
+        return 1
+    fi
+
+    if ! check_oci_config; then
+        pause
+        return 1
+    fi
+
+    if [[ ! -f "$config_file" && -f "$CREATE_INSTANCE_DRAFT_CONFIG" ]]; then
+        log_warn "当前只有未确认草稿，尚无正式创建配置"
+        echo ""
+        echo "提示:"
+        echo "  - 先进入“获取关键参数并保存”并确认完成"
+        echo "  - 或手动将草稿确认后再创建实例"
+        pause
+        return 1
+    fi
+
+    if ! validate_create_instance_config "$config_file"; then
+        pause
+        return 1
+    fi
+
+    show_create_instance_config_summary "$config_file"
+
+    echo "创建方式:"
+    echo "  1) 前台执行一次"
+    echo "  2) 后台持续重试"
+    echo "  0) 返回"
+    echo ""
+
+    local create_mode
+    read -p "请选择创建方式 [默认: 2]: " create_mode
+    create_mode="${create_mode:-2}"
+
+    case "$create_mode" in
+        1)
+            local display_name retry_interval result exit_code instance_id
+            display_name=$(jq -r '.displayName // "N/A"' "$config_file")
+            retry_interval=$(jq -r '.retryInterval // 30' "$config_file")
+
+            if ! check_existing_create_task "$display_name"; then
+                pause
+                return 1
+            fi
+
+            echo ""
+            log_info "开始创建实例: $display_name"
+            result=$(launch_instance_from_config "$config_file" 2>&1)
+            exit_code=$?
+
+            if [[ $exit_code -eq 0 ]]; then
+                instance_id=$(echo "$result" | jq -r '.data.id // empty' 2>/dev/null)
+                log_success "实例创建成功"
+                [[ -n "$instance_id" ]] && echo "实例 OCID: $instance_id"
+                [[ -n "$instance_id" ]] && show_created_instance_summary "$instance_id"
+                send_create_success_notification "$config_file" "$instance_id"
+            else
+                log_error "实例创建失败"
+                echo ""
+                echo "错误输出:"
+                echo "$result"
+                echo ""
+                read -p "是否创建后台任务自动重试? [Y/n]: " -r
+                [[ -z "$REPLY" ]] && REPLY="y"
+                if [[ $REPLY =~ ^[Yy]$ ]]; then
+                    create_instance_background_task "$config_file" "$retry_interval"
+                fi
+            fi
+            ;;
+        2)
+            local retry_interval
+            retry_interval=$(jq -r '.retryInterval // 30' "$config_file")
+            read -p "重试间隔 (秒) [默认: ${retry_interval}]: " REPLY
+            retry_interval="${REPLY:-$retry_interval}"
+            if [[ ! "$retry_interval" =~ ^[0-9]+$ ]]; then
+                log_error "重试间隔必须为正整数"
+                pause
+                return 1
+            fi
+            create_instance_background_task "$config_file" "$retry_interval"
+            ;;
+        0)
+            return 0
+            ;;
+        *)
+            log_error "无效选项"
+            ;;
+    esac
+
+    pause
+}
+
+manage_create_instance() {
+    while true; do
+        show_header
+        echo -e "${BOLD}[5] 创建实例${NC}"
+        echo "========================================"
+        echo ""
+
+        if [[ -f "$CREATE_INSTANCE_CONFIG" ]]; then
+            local saved_display_name
+            saved_display_name=$(jq -r '.displayName // "未命名实例"' "$CREATE_INSTANCE_CONFIG" 2>/dev/null)
+            echo -e "${GREEN}✓${NC} 已确认配置: $saved_display_name"
+        else
+            echo -e "${YELLOW}!${NC} 尚未保存已确认的创建实例配置"
+        fi
+        if [[ -f "$CREATE_INSTANCE_DRAFT_CONFIG" ]]; then
+            local draft_display_name
+            draft_display_name=$(jq -r '.displayName // "未命名实例"' "$CREATE_INSTANCE_DRAFT_CONFIG" 2>/dev/null)
+            echo -e "${YELLOW}!${NC} 存在未完成草稿: $draft_display_name"
+        fi
+        echo ""
+        echo "操作选项:"
+        echo "  1) 获取关键参数并保存"
+        echo "  2) 查看已保存配置"
+        echo "  3) 使用已保存配置创建实例"
+        echo "  0) 返回主菜单"
+        echo ""
+
+        read -p "请选择操作: " -r
+
+        case $REPLY in
+            1) configure_create_instance_params ;;
+            2) show_saved_create_instance_config ;;
+            3) create_instance_from_saved_config ;;
+            0) return 0 ;;
+            *)
+                log_error "无效选项"
+                sleep 1
+                ;;
+        esac
+    done
 }
 
 # ================================
@@ -2655,7 +4445,7 @@ update_by_config_file() {
 manage_background_tasks() {
     while true; do
         show_header
-        echo -e "${BOLD}[5] 管理后台任务${NC}"
+        echo -e "${BOLD}[6] 管理后台任务${NC}"
         echo "========================================"
         echo ""
 
@@ -2775,15 +4565,20 @@ show_help() {
     echo "        - 使用配置文件更新 (JSON)"
     echo "        - 停止/启动实例"
     echo ""
-    echo "  [5] 管理后台任务"
+    echo "  [5] 创建实例"
+    echo "      获取创建实例的关键参数并保存配置"
+    echo "      使用已保存配置执行前台或后台创建"
+    echo "      后台创建失败后自动重试并发送通知"
+    echo ""
+    echo "  [6] 管理后台任务"
     echo "      查看所有后台任务，支持以下操作:"
     echo "        - 查看任务详情和日志"
     echo "        - 停止/恢复/删除任务"
     echo "        - 实时查看日志"
     echo ""
-    echo "  [6] 配置邮件通知"
+    echo "  [7] 配置邮件通知"
     echo "      配置 SMTP 服务器信息"
-    echo "      更新成功后自动发送邮件通知"
+    echo "      更新/创建成功后自动发送邮件通知"
     echo "      支持测试邮件发送"
     echo ""
     echo -e "${BOLD}更新方式说明:${NC}"
@@ -2796,9 +4591,14 @@ show_help() {
     echo "    - 生成 JSON 配置模板"
     echo "    - 直接更新或完整流程"
     echo ""
+    echo "  创建实例:"
+    echo "    - 保存关键参数到 create_instance_config.json"
+    echo "    - 使用已保存配置前台执行或后台重试"
+    echo ""
     echo -e "${BOLD}配置文件位置:${NC}"
     echo "   OCI CLI 配置: ~/.oci/config"
     echo "   私钥文件:     ~/.oci/oci_api_key.pem"
+    echo "   创建配置:     ./create_instance_config.json"
     echo "   邮件配置:     ./email_config.conf"
     echo "   任务目录:     ./tasks/"
     echo ""
@@ -2838,6 +4638,20 @@ show_menu() {
         echo -e "${YELLOW}!${NC} 邮件通知未配置"
     fi
 
+    if [[ -f "$CREATE_INSTANCE_CONFIG" ]]; then
+        local create_name
+        create_name=$(jq -r '.displayName // "未命名实例"' "$CREATE_INSTANCE_CONFIG" 2>/dev/null)
+        echo -e "${GREEN}✓${NC} 创建实例正式配置已保存: ${create_name}"
+    else
+        echo -e "${YELLOW}!${NC} 创建实例正式配置未保存"
+    fi
+
+    if [[ -f "$CREATE_INSTANCE_DRAFT_CONFIG" ]]; then
+        local draft_name
+        draft_name=$(jq -r '.displayName // "未命名实例"' "$CREATE_INSTANCE_DRAFT_CONFIG" 2>/dev/null)
+        echo -e "${YELLOW}!${NC} 创建实例草稿待确认: ${draft_name}"
+    fi
+
     echo ""
     echo -e "${BOLD}请选择操作:${NC}"
     echo ""
@@ -2845,8 +4659,9 @@ show_menu() {
     echo "  2) 初始化 OCI 配置"
     echo "  3) 查看 OCI 配置"
     echo "  4) 管理实例"
-    echo "  5) 管理后台任务"
-    echo "  6) 配置邮件通知"
+    echo "  5) 创建实例"
+    echo "  6) 管理后台任务"
+    echo "  7) 配置邮件通知"
     echo "  h) 帮助信息"
     echo ""
     echo "  0) 退出"
@@ -2868,8 +4683,9 @@ main() {
             2) init_oci_config ;;
             3) view_oci_config ;;
             4) manage_instances ;;
-            5) manage_background_tasks ;;
-            6) configure_email && test_email_config ;;
+            5) manage_create_instance ;;
+            6) manage_background_tasks ;;
+            7) configure_email && test_email_config ;;
             h|H) show_help ;;
             0)
                 echo -e "${GREEN}感谢使用，再见！${NC}"

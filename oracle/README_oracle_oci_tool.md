@@ -1,16 +1,27 @@
-# OCI Instance Update Script
+# OCI Instance Update And Creation Script
 
-An interactive Bash script for managing OCI compute instance configurations via CLI.
+An interactive Bash script for managing OCI compute instance configurations and creation flows via CLI.
 
 ## Features
 
 - **OCI Environment Check**: Verify OCI CLI, jq, configuration files, and connectivity
 - **Instance Management**: List, view, start, stop instances
+- **Instance Creation**: Save key parameters and reuse saved configuration to create new instances
+  - Auto-saves progress to a draft file so you can resume after interruption
+  - Only overwrites the confirmed config after final confirmation
+  - Provides recommended defaults for quick VCN creation
+  - Query and select availability domains, shapes, images, and subnets
+  - Shows an operating system list before listing versions and matching images
+  - Create a VCN inline during subnet creation when no suitable VCN exists
+  - Create a subnet inline during the flow when the required subnet does not exist
+  - Supports configuring boot volume size and boot volume performance (10-120, in steps of 10)
+  - Support one-time foreground creation or background retry-based creation
+  - Prints a success summary with instance OCID, status, private IP, and public IP
 - **Configuration Update**: Update instance OCPU and memory settings
   - Direct update (without stopping instance)
   - Full update flow (stop → update → start)
-- **Background Tasks**: Create and manage background update tasks with auto-retry
-- **Email Notification**: Get notified when updates succeed (SMTP)
+- **Background Tasks**: Create and manage background tasks with auto-retry
+- **Email Notification**: Get notified when updates or creations succeed (SMTP)
 - **Config File Support**: Use JSON config files for batch updates
 - **Task Resume**: Resume stopped tasks with execution count preserved
 
@@ -36,8 +47,9 @@ An interactive Bash script for managing OCI compute instance configurations via 
 | 2 | Initialize OCI configuration |
 | 3 | View OCI configuration |
 | 4 | Manage instances |
-| 5 | Manage background tasks |
-| 6 | Configure email notification |
+| 5 | Create instance |
+| 6 | Manage background tasks |
+| 7 | Configure email notification |
 | h | Help information |
 | 0 | Exit |
 
@@ -55,7 +67,7 @@ An interactive Bash script for managing OCI compute instance configurations via 
 
 ### Email Notification (Optional)
 
-Configure through menu option `[6]`:
+Configure through menu option `[7]`:
 - SMTP server (e.g., `smtp.qq.com`)
 - SMTP port (e.g., `465` for SSL)
 - Sender email
@@ -69,16 +81,26 @@ Configure through menu option `[6]`:
 ├── oracle_oci_tool.sh      # Main script
 ├── email_config.conf       # Email config (auto-generated)
 ├── tasks/                  # Background task data (runtime-generated)
-├── instance_update.json    # Config template (manual/auto-generated)
+├── update_instance_config.json # Instance update config template (manual/auto-generated)
+├── create_instance_config.json # Instance creation parameter config (auto-generated)
+├── create_instance_config.draft.json # Instance creation draft config (auto-generated)
 └── retry_update.sh         # Retry script (auto-generated)
 ```
 
 ## Background Tasks
 
 - Tasks run in background with auto-retry
+- Supports both instance update tasks and instance creation tasks
 - Execution count is preserved across restarts
 - Support resume stopped tasks
 - Real-time log viewing
+
+## Instance Creation Config Notes
+
+- `create_instance_config.draft.json` stores in-progress draft values during the setup flow
+- `create_instance_config.json` is overwritten only after final confirmation
+- Boot volume size and performance are preserved in the saved config and reused for both foreground creation and background retry tasks
+- For `Flex` shapes, CPU and memory are configured through `shape-config`, while boot volume settings are supplied through the instance launch source settings
 
 ## ⚠️ Important Notices & Disclaimer
 
