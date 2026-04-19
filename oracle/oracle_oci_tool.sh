@@ -232,6 +232,28 @@ init_task_dir() {
     mkdir -p "$TASK_DIR"
 }
 
+# 规范化任务错误信息，兼容旧版本写入的双重转义字符串
+normalize_task_error() {
+    local raw_error="$1"
+
+    if [[ -z "$raw_error" || "$raw_error" == "null" ]]; then
+        return 0
+    fi
+
+    printf '%s' "$raw_error" | jq -Rrs 'fromjson? // .' 2>/dev/null || printf '%s' "$raw_error"
+}
+
+# 将任务错误信息解析为 JSON 对象或原始字符串
+get_task_error_payload() {
+    local raw_error="$1"
+    local normalized_error
+
+    normalized_error=$(normalize_task_error "$raw_error")
+    normalized_error=$(printf '%s' "$normalized_error" | sed '1 s/^ServiceError:[[:space:]]*//')
+
+    printf '%s' "$normalized_error" | jq -Rrs 'fromjson? // .' 2>/dev/null || printf 'null'
+}
+
 # 检查实例是否有运行中的任务
 # 返回: 0 = 有运行中任务且用户选择不停止, 1 = 无运行中任务或用户选择停止
 check_existing_task_for_instance() {
@@ -457,13 +479,9 @@ exec_background_task() {
         if [[ -f "$task_path/task.info" ]]; then
             local temp_file="$task_path/task.info.tmp"
 
-            # 对错误信息进行 JSON 转义（jq -Rs 会自动处理）
-            local escaped_error
-            escaped_error=$(echo "$last_error" | jq -Rs .)
-
             jq --arg attempt "$attempt" \
                --arg status "$last_status" \
-               --arg error "$escaped_error" \
+               --arg error "$last_error" \
                --arg time "$(date -Iseconds)" \
                '.attempt = ($attempt | tonumber) |
                 .last_status = $status |
@@ -728,11 +746,10 @@ list_background_tasks() {
 
         # 显示错误信息（如果有）- 提取关键信息并翻译
         if [[ -n "$last_error" && "$last_error" != "null" && "$last_error" != "" ]]; then
-            # 提取关键错误信息 - 去掉 ServiceError: 前缀，提取 JSON 部分
-            local error_json error_code error_message error_translated
-            error_json=$(echo "$last_error" | sed 's/^ServiceError:[[:space:]]*//' | tail -n +0)
-            error_code=$(echo "$error_json" | jq -r '.code // "Unknown"' 2>/dev/null || echo "Unknown")
-            error_message=$(echo "$error_json" | jq -r '.message // ""' 2>/dev/null || echo "")
+            local error_payload error_code error_message error_translated
+            error_payload=$(get_task_error_payload "$last_error")
+            error_code=$(printf '%s' "$error_payload" | jq -r 'if type == "object" then .code // "Unknown" else "Unknown" end' 2>/dev/null || echo "Unknown")
+            error_message=$(printf '%s' "$error_payload" | jq -r 'if type == "object" then .message // "" else . end' 2>/dev/null || echo "")
 
             # 翻译常见错误
             case "$error_code" in
@@ -897,14 +914,13 @@ view_task_detail() {
                 echo -e "${RED}错误详情:${NC}"
                 echo -e "${RED}========================================${NC}"
 
-                # 提取关键错误信息 - 去掉 ServiceError: 前缀，提取 JSON 部分
-                local error_json error_code error_message error_status error_timestamp error_request_id
-                error_json=$(echo "$last_error" | sed 's/^ServiceError:[[:space:]]*//' | tail -n +0)
-                error_code=$(echo "$error_json" | jq -r '.code // "Unknown"' 2>/dev/null || echo "Unknown")
-                error_message=$(echo "$error_json" | jq -r '.message // ""' 2>/dev/null || echo "")
-                error_status=$(echo "$error_json" | jq -r '.status // ""' 2>/dev/null || echo "")
-                error_timestamp=$(echo "$error_json" | jq -r '.timestamp // ""' 2>/dev/null || echo "")
-                error_request_id=$(echo "$error_json" | jq -r '.["opc-request-id"] // ""' 2>/dev/null || echo "")
+                local error_payload error_code error_message error_status error_timestamp error_request_id
+                error_payload=$(get_task_error_payload "$last_error")
+                error_code=$(printf '%s' "$error_payload" | jq -r 'if type == "object" then .code // "Unknown" else "Unknown" end' 2>/dev/null || echo "Unknown")
+                error_message=$(printf '%s' "$error_payload" | jq -r 'if type == "object" then .message // "" else . end' 2>/dev/null || echo "")
+                error_status=$(printf '%s' "$error_payload" | jq -r 'if type == "object" then .status // "" else "" end' 2>/dev/null || echo "")
+                error_timestamp=$(printf '%s' "$error_payload" | jq -r 'if type == "object" then .timestamp // "" else "" end' 2>/dev/null || echo "")
+                error_request_id=$(printf '%s' "$error_payload" | jq -r 'if type == "object" then .["opc-request-id"] // "" else "" end' 2>/dev/null || echo "")
 
                 # 翻译错误代码
                 local error_code_translated
