@@ -151,7 +151,7 @@ test_email_config() {
     read -p "是否发送测试邮件? [Y/n]: " -r
     [[ -z "$REPLY" ]] && REPLY="y"
     if [[ $REPLY =~ ^[Yy]$ ]]; then
-        send_email_notification "OCI 实例配置管理工具 测试邮件" "这是一封测试邮件\n\n发送时间: $(date '+%Y-%m-%d %H:%M:%S')\n\n如果您收到此邮件，说明邮件配置正确。"
+        send_email_notification "OCI 实例配置管理工具 测试邮件" "这是一封测试邮件\n发送时间: $(date '+%Y-%m-%d %H:%M:%S')\n如果您收到此邮件，说明邮件配置正确。"
     fi
 }
 
@@ -161,6 +161,10 @@ test_email_config() {
 send_email_notification() {
     local subject="$1"
     local body="$2"
+    local formatted_body
+
+    # 将调用方传入的 \n 等转义序列转换为真实换行，避免邮件正文显示字面量
+    formatted_body=$(printf '%b' "$body")
 
     # 检查邮件配置
     if [[ -z "$SMTP_HOST" || -z "$SMTP_PORT" || -z "$SMTP_USER" || -z "$SMTP_PASS" || -z "$EMAIL_TO" ]]; then
@@ -174,7 +178,7 @@ To: ${EMAIL_TO}
 Subject: ${subject}
 Content-Type: text/plain; charset=UTF-8
 
-${body}"
+${formatted_body}"
 
     # 使用 curl 发送邮件 (SMTP with SSL, LOGIN认证)
     echo "$email_content" | curl -s --url "smtps://${SMTP_HOST}:${SMTP_PORT}" \
@@ -510,7 +514,7 @@ exec_background_task() {
             if [[ $? -eq 0 ]]; then
                 log_success "更新成功！"
                 # 发送邮件通知
-                send_email_notification "OCI 实例配置更新成功" "实例 ${instance_ocid} 配置更新成功\n\n更新内容:\n- OCPUs: ${target_ocpus}\n- Memory: ${target_memory} GB\n\n时间: $(date '+%Y-%m-%d %H:%M:%S')"
+                send_email_notification "OCI 实例配置更新成功" "实例 ${instance_ocid} 配置更新成功\n更新内容:\n- OCPUs: ${target_ocpus}\n- Memory: ${target_memory} GB\n时间: $(date '+%Y-%m-%d %H:%M:%S')"
                 # 更新任务状态
                 update_task_status "$attempt" "success" ""
                 jq '.status = "completed" | .end_time = "'"$(date -Iseconds)"'"' \
@@ -2282,7 +2286,7 @@ update_instance_from_file() {
             if start_instance; then
                 log_success "完整更新流程执行成功！"
                 # 发送邮件通知
-                send_email_notification "OCI 实例配置文件更新成功" "实例 ${instance_id} 配置文件更新成功\n\n配置文件: $config_file\n\n时间: $(date '+%Y-%m-%d %H:%M:%S')"
+                send_email_notification "OCI 实例配置文件更新成功" "实例 ${instance_id} 配置文件更新成功\n配置文件: $config_file\n时间: $(date '+%Y-%m-%d %H:%M:%S')"
             else
                 log_warn "启动实例失败，请手动启动"
             fi
@@ -3754,7 +3758,7 @@ send_create_success_notification() {
 
     send_email_notification \
         "OCI 实例创建成功" \
-        "实例 ${display_name} 创建成功\n\n实例 OCID: ${instance_id}\n规格: ${shape}\nOCPU: ${ocpus}\n内存: ${memory_gbs} GB\n时间: $(date '+%Y-%m-%d %H:%M:%S')"
+        "实例 ${display_name} 创建成功\n实例 OCID: ${instance_id}\n规格: ${shape}\nOCPU: ${ocpus}\n内存: ${memory_gbs} GB\n时间: $(date '+%Y-%m-%d %H:%M:%S')"
 }
 
 show_created_instance_summary() {
