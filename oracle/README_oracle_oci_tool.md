@@ -5,6 +5,7 @@ An interactive Bash script for managing OCI compute instance configurations and 
 ## Features
 
 - **OCI Environment Check**: Verify OCI CLI, jq, configuration files, and connectivity
+  - Can prompt to install common missing dependencies directly from the script
 - **Instance Management**: List, view, start, stop instances
 - **Instance Creation**: Save key parameters and reuse saved configuration to create new instances
   - Auto-saves progress to a draft file so you can resume after interruption
@@ -24,6 +25,7 @@ An interactive Bash script for managing OCI compute instance configurations and 
 - **Email Notification**: Get notified when updates or creations succeed (SMTP)
 - **Config File Support**: Use JSON config files for batch updates
 - **Task Resume**: Resume stopped tasks with execution count preserved
+- **Uninstall Flow**: Interactive cleanup for helper dependencies, OCI config, logs, and script data
 
 ## Requirements
 
@@ -45,6 +47,7 @@ sudo apt install -y bash curl jq bsdextrautils
 Notes:
 - `bsdextrautils` provides `column`
 - `OCI CLI` should be installed separately by following Oracle's official documentation
+- The script's "Check OCI environment" menu can also prompt to install missing dependencies directly
 
 ### macOS
 
@@ -56,6 +59,7 @@ Notes:
 - macOS already includes `bash` and `curl`
 - `column` is typically available by default
 - `OCI CLI` should be installed separately by following Oracle's official documentation
+- The script's "Check OCI environment" menu can also prompt to install missing dependencies directly
 
 ## Quick Start
 
@@ -80,6 +84,7 @@ No matter which launch method you use, the script stores its data in `~/.oracle_
 | 5 | Create instance |
 | 6 | Manage background tasks |
 | 7 | Configure email notification |
+| 8 | Uninstall script |
 | h | Help information |
 | 0 | Exit |
 
@@ -121,6 +126,7 @@ Notes:
 - Local execution with `./oracle_oci_tool.sh` and remote execution with `bash <(curl ...)` share the same data directory
 - On the first run of the updated script, common configs and tasks will be migrated automatically if they still exist next to the script
 - You can override the location by setting the `OCI_TOOL_HOME` environment variable before launch
+- The uninstall flow can optionally remove this entire data directory
 
 ## Script File
 
@@ -136,6 +142,14 @@ Notes:
 - Execution count is preserved across restarts
 - Support resume stopped tasks
 - Real-time log viewing
+
+## Uninstall Notes
+
+- The main menu provides `[8] Uninstall script`
+- You can interactively choose whether to stop background tasks, remove the data directory, delete `~/.oci/config`, delete private keys, or remove the full `~/.oci` directory
+- The script will try to remove common OCI CLI installation files
+- It can optionally uninstall helper dependencies such as `jq` and `bsdextrautils`
+- System-critical tools such as `curl` are not removed by default and require a separate confirmation
 
 ## Instance Creation Config Notes
 

@@ -5,6 +5,7 @@
 ## 功能特性
 
 - **OCI 环境检查**：验证 OCI CLI、jq、配置文件和连接状态
+  - 缺失常见依赖时可直接在脚本内询问并安装
 - **实例管理**：列出、查看、启动、停止实例
 - **实例创建**：保存关键参数并复用已保存配置创建新实例
   - 设置过程中自动保存到草稿，意外退出后可继续
@@ -24,6 +25,7 @@
 - **邮件通知**：更新/创建成功后发送邮件通知（SMTP）
 - **配置文件支持**：使用 JSON 配置文件批量更新
 - **任务恢复**：恢复已停止的任务，保留执行次数
+- **卸载功能**：支持交互式卸载辅助依赖、OCI 配置、日志和脚本数据
 
 ## 系统要求
 
@@ -45,6 +47,7 @@ sudo apt install -y bash curl jq bsdextrautils
 说明：
 - `bsdextrautils` 提供 `column`
 - `OCI CLI` 需要按 Oracle 官方文档单独安装
+- 脚本的“检查 OCI 环境”菜单也支持在缺失依赖时直接询问并安装
 
 ### macOS
 
@@ -56,6 +59,7 @@ brew install jq
 - macOS 自带 `bash` 和 `curl`
 - `column` 通常系统自带
 - `OCI CLI` 需要按 Oracle 官方文档单独安装
+- 脚本的“检查 OCI 环境”菜单也支持在缺失依赖时直接询问并安装
 
 ## 快速开始
 
@@ -80,6 +84,7 @@ bash <(curl -sL https://raw.githubusercontent.com/yhj945/tools/main/oracle/oracl
 | 5 | 创建实例 |
 | 6 | 管理后台任务 |
 | 7 | 配置邮件通知 |
+| 8 | 卸载脚本 |
 | h | 帮助信息 |
 | 0 | 退出 |
 
@@ -121,6 +126,7 @@ bash <(curl -sL https://raw.githubusercontent.com/yhj945/tools/main/oracle/oracl
 - 本地执行 `./oracle_oci_tool.sh` 和远程执行 `bash <(curl ...)` 使用同一个数据目录
 - 首次运行新版脚本时，如旧数据仍在脚本目录中，会自动迁移常见配置和任务到 `~/.oracle_oci_tool`
 - 如需自定义目录，可在运行前设置环境变量 `OCI_TOOL_HOME`
+- 通过“卸载脚本”功能时，可选择是否删除此数据目录
 
 ## 脚本文件
 
@@ -136,6 +142,14 @@ bash <(curl -sL https://raw.githubusercontent.com/yhj945/tools/main/oracle/oracl
 - 执行次数在重启后保留
 - 支持恢复已停止的任务
 - 支持实时查看日志
+
+## 卸载说明
+
+- 主菜单提供 `[8] 卸载脚本`
+- 可交互式选择是否停止后台任务、删除数据目录、删除 `~/.oci/config`、删除私钥、删除 `~/.oci`
+- 会尽力删除常见 OCI CLI 安装文件
+- 可选卸载辅助依赖（如 `jq`、`bsdextrautils`）
+- `curl` 这类系统关键组件不会默认直接卸载，需单独确认
 
 ## 创建实例参数说明
 

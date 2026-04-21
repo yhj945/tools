@@ -1315,6 +1315,329 @@ show_header() {
 }
 
 # ================================
+# 系统环境辅助
+# ================================
+detect_package_manager() {
+    if command -v apt-get >/dev/null 2>&1; then
+        echo "apt"
+    elif command -v brew >/dev/null 2>&1; then
+        echo "brew"
+    else
+        echo "unknown"
+    fi
+}
+
+run_privileged_command() {
+    local cmd="$1"
+
+    if [[ $EUID -ne 0 ]] && command -v sudo >/dev/null 2>&1; then
+        sudo bash -lc "$cmd"
+    else
+        bash -lc "$cmd"
+    fi
+}
+
+install_system_packages() {
+    local manager="$1"
+    shift
+
+    if [[ $# -eq 0 ]]; then
+        return 0
+    fi
+
+    case "$manager" in
+        apt)
+            run_privileged_command "apt-get update && apt-get install -y $*"
+            ;;
+        brew)
+            brew install "$@"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+package_is_installed() {
+    local manager="$1"
+    local package_name="$2"
+
+    case "$manager" in
+        apt)
+            dpkg -s "$package_name" >/dev/null 2>&1
+            ;;
+        brew)
+            brew list --formula "$package_name" >/dev/null 2>&1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+uninstall_system_packages() {
+    local manager="$1"
+    shift
+
+    if [[ $# -eq 0 ]]; then
+        return 0
+    fi
+
+    case "$manager" in
+        apt)
+            run_privileged_command "apt-get remove -y $*"
+            ;;
+        brew)
+            brew uninstall "$@"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+install_oci_cli_interactive() {
+    echo ""
+    log_info "将启动 OCI CLI 官方安装程序"
+    echo "安装命令:"
+    echo "  bash -c \"\$(curl -L https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh)\""
+    echo ""
+    read -p "是否继续安装 OCI CLI? [Y/n]: " -r
+    [[ -z "$REPLY" ]] && REPLY="y"
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        log_info "已跳过 OCI CLI 安装"
+        return 1
+    fi
+
+    bash -c "$(curl -L https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh)"
+}
+
+prompt_install_missing_dependencies() {
+    local missing_oci="$1"
+    local missing_jq="$2"
+    local missing_curl="$3"
+    local missing_column="$4"
+    local manager
+    local install_packages=()
+
+    manager="$(detect_package_manager)"
+
+    if [[ "$missing_jq" == "false" && "$missing_curl" == "false" && "$missing_column" == "false" && "$missing_oci" == "false" ]]; then
+        return 0
+    fi
+
+    echo ""
+    echo -e "${CYAN}检测到以下缺失项目:${NC}"
+    [[ "$missing_oci" == "true" ]] && echo "  - OCI CLI"
+    [[ "$missing_jq" == "true" ]] && echo "  - jq"
+    [[ "$missing_curl" == "true" ]] && echo "  - curl"
+    [[ "$missing_column" == "true" ]] && echo "  - column（用于表格对齐显示，可选）"
+    echo ""
+    read -p "是否立即尝试安装缺失依赖? [Y/n]: " -r
+    [[ -z "$REPLY" ]] && REPLY="y"
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        log_info "已跳过自动安装"
+        return 1
+    fi
+
+    case "$manager" in
+        apt)
+            [[ "$missing_jq" == "true" ]] && install_packages+=("jq")
+            [[ "$missing_curl" == "true" ]] && install_packages+=("curl")
+            [[ "$missing_column" == "true" ]] && install_packages+=("bsdextrautils")
+            ;;
+        brew)
+            [[ "$missing_jq" == "true" ]] && install_packages+=("jq")
+            [[ "$missing_curl" == "true" ]] && install_packages+=("curl")
+            ;;
+        *)
+            ;;
+    esac
+
+    if [[ ${#install_packages[@]} -gt 0 ]]; then
+        if install_system_packages "$manager" "${install_packages[@]}"; then
+            log_success "系统依赖安装完成"
+        else
+            log_warn "系统依赖自动安装失败，请手动安装"
+        fi
+    elif [[ "$missing_jq" == "true" || "$missing_curl" == "true" || "$missing_column" == "true" ]]; then
+        log_warn "未识别到支持的包管理器，请手动安装系统依赖"
+    fi
+
+    if [[ "$missing_oci" == "true" ]]; then
+        install_oci_cli_interactive || log_warn "OCI CLI 安装未完成"
+    fi
+
+    return 0
+}
+
+stop_all_running_tasks() {
+    init_task_dir
+
+    local stopped_any="false"
+    for task_path in "$TASK_DIR"/*; do
+        [[ ! -d "$task_path" ]] && continue
+        local task_id
+        task_id="$(basename "$task_path")"
+        stop_task "$task_id" >/dev/null 2>&1 && stopped_any="true"
+    done
+
+    [[ "$stopped_any" == "true" ]] && log_info "已尝试停止所有后台任务"
+    return 0
+}
+
+remove_oci_cli_installation() {
+    local removed_any="false"
+    local candidates=(
+        "$HOME/bin/oci"
+        "$HOME/bin/oci-cli"
+        "$HOME/bin/oci_autocomplete.sh"
+        "$HOME/lib/oracle-cli"
+        "$HOME/.local/bin/oci"
+        "$HOME/.local/lib/oracle-cli"
+    )
+
+    local path
+    for path in "${candidates[@]}"; do
+        if [[ -e "$path" ]]; then
+            rm -rf "$path"
+            removed_any="true"
+        fi
+    done
+
+    if [[ "$removed_any" == "true" ]]; then
+        log_success "已删除常见 OCI CLI 安装文件"
+    else
+        log_warn "未找到常见 OCI CLI 安装文件，若通过其他方式安装请手动卸载"
+    fi
+}
+
+uninstall_script() {
+    show_header
+    echo -e "${BOLD}[8] 卸载脚本${NC}"
+    echo "========================================"
+    echo ""
+    echo -e "${RED}警告: 此操作可能删除依赖、OCI 配置、密钥文件、任务日志和脚本数据${NC}"
+    echo ""
+
+    read -p "是否继续进入卸载流程? [y/N]: " -r
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        log_info "已取消卸载"
+        pause
+        return 0
+    fi
+
+    local package_manager
+    package_manager="$(detect_package_manager)"
+
+    echo ""
+    read -p "是否先停止所有后台任务? [Y/n]: " -r
+    [[ -z "$REPLY" ]] && REPLY="y"
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        stop_all_running_tasks
+    fi
+
+    echo ""
+    read -p "是否删除脚本数据目录 (${DATA_DIR})? [Y/n]: " -r
+    [[ -z "$REPLY" ]] && REPLY="y"
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        rm -rf "$DATA_DIR"
+        log_success "已删除数据目录: $DATA_DIR"
+    fi
+
+    local key_file=""
+    if [[ -f "$OCI_CONFIG_FILE" ]]; then
+        key_file="$(grep "^key_file=" "$OCI_CONFIG_FILE" 2>/dev/null | cut -d'=' -f2 | head -1)"
+        key_file="${key_file/#\~/$HOME}"
+    fi
+
+    echo ""
+    read -p "是否删除 OCI 配置文件 (${OCI_CONFIG_FILE})? [Y/n]: " -r
+    [[ -z "$REPLY" ]] && REPLY="y"
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        rm -f "$OCI_CONFIG_FILE"
+        log_success "已删除 OCI 配置文件"
+
+        if [[ -n "$key_file" && -f "$key_file" ]]; then
+            read -p "是否同时删除私钥文件 (${key_file})? [y/N]: " -r
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                rm -f "$key_file"
+                log_success "已删除私钥文件"
+            fi
+        fi
+
+        if [[ -d "$HOME/.oci" ]]; then
+            read -p "是否删除整个 ~/.oci 目录中的剩余文件? [y/N]: " -r
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                rm -rf "$HOME/.oci"
+                log_success "已删除 ~/.oci 目录"
+            fi
+        fi
+    fi
+
+    echo ""
+    read -p "是否尝试卸载 OCI CLI 安装文件? [Y/n]: " -r
+    [[ -z "$REPLY" ]] && REPLY="y"
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        remove_oci_cli_installation
+    fi
+
+    local dependency_packages=()
+    case "$package_manager" in
+        apt)
+            package_is_installed "$package_manager" "jq" && dependency_packages+=("jq")
+            package_is_installed "$package_manager" "bsdextrautils" && dependency_packages+=("bsdextrautils")
+            ;;
+        brew)
+            package_is_installed "$package_manager" "jq" && dependency_packages+=("jq")
+            ;;
+    esac
+
+    if [[ ${#dependency_packages[@]} -gt 0 ]]; then
+        echo ""
+        echo "可卸载的辅助依赖: ${dependency_packages[*]}"
+        read -p "是否卸载这些辅助依赖? [y/N]: " -r
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            if uninstall_system_packages "$package_manager" "${dependency_packages[@]}"; then
+                log_success "辅助依赖卸载完成"
+            else
+                log_warn "辅助依赖卸载失败，请手动检查"
+            fi
+        fi
+    fi
+
+    if [[ "$package_manager" != "unknown" ]]; then
+        echo ""
+        echo -e "${YELLOW}提示: curl/bash 通常为系统关键组件，默认不自动卸载${NC}"
+        read -p "是否尝试卸载 curl? [y/N]: " -r
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            if uninstall_system_packages "$package_manager" "curl"; then
+                log_success "curl 卸载命令已执行"
+            else
+                log_warn "curl 卸载失败，请手动检查"
+            fi
+        fi
+    fi
+
+    if [[ -n "$SCRIPT_SOURCE_DIR" && -f "$SCRIPT_SOURCE_DIR/oracle_oci_tool.sh" ]]; then
+        echo ""
+        read -p "是否删除当前本地脚本文件 (${SCRIPT_SOURCE_DIR}/oracle_oci_tool.sh)? [y/N]: " -r
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            rm -f "$SCRIPT_SOURCE_DIR/oracle_oci_tool.sh"
+            log_success "已删除本地脚本文件"
+        fi
+    fi
+
+    echo ""
+    log_success "卸载流程已完成"
+    echo ""
+    echo "说明:"
+    echo "  - 若 OCI CLI 不是通过常见目录安装，可能仍需手动清理"
+    echo "  - 若通过其他方式安装了依赖，请按对应包管理器手动检查"
+    pause
+}
+
+# ================================
 # 检查 OCI CLI 是否安装
 # ================================
 check_oci_cli() {
@@ -1351,6 +1674,10 @@ check_oci_environment() {
     echo ""
 
     local all_ok=true
+    local missing_oci="false"
+    local missing_jq="false"
+    local missing_curl="false"
+    local missing_column="false"
 
     # 检查 OCI CLI
     echo -n "检查 OCI CLI... "
@@ -1361,6 +1688,7 @@ check_oci_environment() {
     else
         echo -e "${RED}✗ 未安装${NC}"
         all_ok=false
+        missing_oci="true"
     fi
 
     # 检查 jq
@@ -1370,6 +1698,26 @@ check_oci_environment() {
     else
         echo -e "${YELLOW}✗ 未安装${NC}"
         all_ok=false
+        missing_jq="true"
+    fi
+
+    # 检查 curl
+    echo -n "检查 curl... "
+    if command -v curl &> /dev/null; then
+        echo -e "${GREEN}✓ 已安装${NC}"
+    else
+        echo -e "${YELLOW}✗ 未安装${NC}"
+        all_ok=false
+        missing_curl="true"
+    fi
+
+    # 检查 column（可选）
+    echo -n "检查 column... "
+    if command -v column &> /dev/null; then
+        echo -e "${GREEN}✓ 已安装${NC}"
+    else
+        echo -e "${YELLOW}✗ 未安装${NC} (可选，将降级为普通文本显示)"
+        missing_column="true"
     fi
 
     # 检查 OCI 配置
@@ -1413,6 +1761,10 @@ check_oci_environment() {
         log_success "环境检查通过"
     else
         log_warn "部分检查未通过，请先配置环境"
+    fi
+
+    if [[ "$missing_oci" == "true" || "$missing_jq" == "true" || "$missing_curl" == "true" || "$missing_column" == "true" ]]; then
+        prompt_install_missing_dependencies "$missing_oci" "$missing_jq" "$missing_curl" "$missing_column"
     fi
 
     pause
@@ -4732,6 +5084,10 @@ show_help() {
     echo "      更新/创建成功后自动发送邮件通知"
     echo "      支持测试邮件发送"
     echo ""
+    echo "  [8] 卸载脚本"
+    echo "      交互式卸载辅助依赖、OCI 配置、日志和脚本数据"
+    echo "      可选删除本地脚本文件"
+    echo ""
     echo -e "${BOLD}更新方式说明:${NC}"
     echo ""
     echo "  输入配置参数更新:"
@@ -4814,6 +5170,7 @@ show_menu() {
     echo "  5) 创建实例"
     echo "  6) 管理后台任务"
     echo "  7) 配置邮件通知"
+    echo "  8) 卸载脚本"
     echo "  h) 帮助信息"
     echo ""
     echo "  0) 退出"
@@ -4838,6 +5195,7 @@ main() {
             5) manage_create_instance ;;
             6) manage_background_tasks ;;
             7) configure_email && test_email_config ;;
+            8) uninstall_script ;;
             h|H) show_help ;;
             0)
                 echo -e "${GREEN}感谢使用，再见！${NC}"
