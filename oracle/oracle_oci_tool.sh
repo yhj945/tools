@@ -127,6 +127,12 @@ load_email_config() {
     return 1
 }
 
+reload_email_config_for_notification() {
+    if [[ -f "$EMAIL_CONFIG_FILE" ]]; then
+        load_email_config >/dev/null 2>&1
+    fi
+}
+
 # ================================
 # 保存邮件配置
 # ================================
@@ -217,7 +223,9 @@ configure_email() {
 # 测试邮件发送
 # ================================
 test_email_config() {
-    if [[ -z "$SMTP_HOST" || -z "$SMTP_USER" || -z "$EMAIL_TO" ]]; then
+    reload_email_config_for_notification
+
+    if [[ -z "$SMTP_HOST" || -z "$SMTP_PORT" || -z "$SMTP_USER" || -z "$SMTP_PASS" || -z "$EMAIL_TO" ]]; then
         log_error "邮件配置不完整，请先配置邮件参数"
         return 1
     fi
@@ -237,6 +245,9 @@ send_email_notification() {
     local subject="$1"
     local body="$2"
     local formatted_body
+
+    # 每次发送前重新加载邮件配置，确保后台任务也能使用最新保存的配置
+    reload_email_config_for_notification
 
     # 将调用方传入的 \n 等转义序列转换为真实换行，避免邮件正文显示字面量
     formatted_body=$(printf '%b' "$body")
