@@ -35,9 +35,14 @@ An interactive Bash script for managing OCI compute instance configurations and 
 ## Quick Start
 
 ```bash
-# Run the script
+# Option 1: run locally after downloading
 ./oracle_oci_tool.sh
+
+# Option 2: run directly from the remote source
+bash <(curl -sL https://raw.githubusercontent.com/yhj945/tools/main/oracle/oracle_oci_tool.sh)
 ```
+
+No matter which launch method you use, the script stores its data in `~/.oracle_oci_tool` by default, so tasks, email settings, and creation configs are not lost when you switch execution methods.
 
 ## Main Menu
 
@@ -74,17 +79,29 @@ Configure through menu option `[7]`:
 - SMTP password/authorization code
 - Recipient email
 
-## File Structure
+## Data Directory
 
+Default data directory:
+
+```text
+~/.oracle_oci_tool/
+├── email_config.conf
+├── tasks/
+├── update_instance_config.json
+├── create_instance_config.json
+└── create_instance_config.draft.json
 ```
+
+Notes:
+- Local execution with `./oracle_oci_tool.sh` and remote execution with `bash <(curl ...)` share the same data directory
+- On the first run of the updated script, common configs and tasks will be migrated automatically if they still exist next to the script
+- You can override the location by setting the `OCI_TOOL_HOME` environment variable before launch
+
+## Script File
+
+```text
 ./
-├── oracle_oci_tool.sh      # Main script
-├── email_config.conf       # Email config (auto-generated)
-├── tasks/                  # Background task data (runtime-generated)
-├── update_instance_config.json # Instance update config template (manual/auto-generated)
-├── create_instance_config.json # Instance creation parameter config (auto-generated)
-├── create_instance_config.draft.json # Instance creation draft config (auto-generated)
-└── retry_update.sh         # Retry script (auto-generated)
+└── oracle_oci_tool.sh      # Main script
 ```
 
 ## Background Tasks

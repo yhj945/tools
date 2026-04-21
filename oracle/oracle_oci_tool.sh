@@ -22,15 +22,72 @@ BOLD='\033[1m'
 # ================================
 # 配置文件路径
 # ================================
-# 获取脚本所在目录
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 获取脚本来源目录
+resolve_script_source_dir() {
+    local source_path="${BASH_SOURCE[0]:-$0}"
+    local source_dir=""
+
+    # 优先使用真实脚本文件所在目录
+    if [[ -n "$source_path" && "$source_path" != "-" && "$source_path" != /dev/fd/* && "$source_path" != /proc/self/fd/* ]]; then
+        source_dir="$(cd "$(dirname "$source_path")" 2>/dev/null && pwd)"
+        if [[ -n "$source_dir" && -f "$source_dir/oracle_oci_tool.sh" ]]; then
+            printf '%s\n' "$source_dir"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+# 获取工具数据目录
+resolve_data_dir() {
+    # 允许显式指定工具目录，适合通过 bash <(...) 这类方式运行
+    if [[ -n "${OCI_TOOL_HOME:-}" && -d "${OCI_TOOL_HOME}" ]]; then
+        printf '%s\n' "$(cd "${OCI_TOOL_HOME}" 2>/dev/null && pwd)"
+        return 0
+    fi
+
+    # 默认使用家目录下固定目录，确保本地执行和远程执行共享同一份数据
+    printf '%s\n' "${HOME}/.oracle_oci_tool"
+}
+
+SCRIPT_SOURCE_DIR="$(resolve_script_source_dir 2>/dev/null || true)"
+DATA_DIR="$(resolve_data_dir)"
 OCI_CONFIG_FILE="$HOME/.oci/config"
-UPDATE_INSTANCE_CONFIG="${SCRIPT_DIR}/update_instance_config.json"
-CREATE_INSTANCE_CONFIG="${SCRIPT_DIR}/create_instance_config.json"
-CREATE_INSTANCE_DRAFT_CONFIG="${SCRIPT_DIR}/create_instance_config.draft.json"
-RETRY_SCRIPT="${SCRIPT_DIR}/retry_update.sh"
-TASK_DIR="${SCRIPT_DIR}/tasks"
-EMAIL_CONFIG_FILE="${SCRIPT_DIR}/email_config.conf"
+UPDATE_INSTANCE_CONFIG="${DATA_DIR}/update_instance_config.json"
+CREATE_INSTANCE_CONFIG="${DATA_DIR}/create_instance_config.json"
+CREATE_INSTANCE_DRAFT_CONFIG="${DATA_DIR}/create_instance_config.draft.json"
+RETRY_SCRIPT="${DATA_DIR}/retry_update.sh"
+TASK_DIR="${DATA_DIR}/tasks"
+EMAIL_CONFIG_FILE="${DATA_DIR}/email_config.conf"
+
+sync_legacy_data_dir() {
+    local legacy_dir="$SCRIPT_SOURCE_DIR"
+
+    if [[ -z "$legacy_dir" || "$legacy_dir" == "$DATA_DIR" || ! -d "$legacy_dir" ]]; then
+        return 0
+    fi
+
+    local legacy_items=(
+        "update_instance_config.json"
+        "create_instance_config.json"
+        "create_instance_config.draft.json"
+        "email_config.conf"
+        "tasks"
+    )
+
+    local item
+    for item in "${legacy_items[@]}"; do
+        if [[ -e "$legacy_dir/$item" && ! -e "$DATA_DIR/$item" ]]; then
+            cp -R "$legacy_dir/$item" "$DATA_DIR/$item" 2>/dev/null
+        fi
+    done
+}
+
+init_data_dir() {
+    mkdir -p "$DATA_DIR"
+    sync_legacy_data_dir
+}
 
 # ================================
 # 邮件通知配置（默认值）
@@ -3320,6 +3377,8 @@ save_create_instance_config() {
         boot_vpus_json="$boot_volume_vpus_per_gb"
     fi
 
+    mkdir -p "$(dirname "$config_file")"
+
     jq -n \
         --arg compartment_id "$compartment_id" \
         --arg availability_domain "$availability_domain" \
@@ -4618,9 +4677,10 @@ show_help() {
     echo -e "${BOLD}配置文件位置:${NC}"
     echo "   OCI CLI 配置: ~/.oci/config"
     echo "   私钥文件:     ~/.oci/oci_api_key.pem"
-    echo "   创建配置:     ./create_instance_config.json"
-    echo "   邮件配置:     ./email_config.conf"
-    echo "   任务目录:     ./tasks/"
+    echo "   数据目录:     $DATA_DIR"
+    echo "   创建配置:     $CREATE_INSTANCE_CONFIG"
+    echo "   邮件配置:     $EMAIL_CONFIG_FILE"
+    echo "   任务目录:     $TASK_DIR/"
     echo ""
     echo -e "${BOLD}如何获取 OCI 配置信息:${NC}"
     echo "   1. 登录 OCI 控制台: https://cloud.oracle.com"
@@ -4728,6 +4788,7 @@ trap 'echo -e "\n${YELLOW}操作已取消${NC}"; exit 0' INT TERM
 # 启动主程序
 # ================================
 # 加载邮件配置
+init_data_dir
 load_email_config
 
 # 启动主菜单

@@ -35,9 +35,14 @@
 ## 快速开始
 
 ```bash
-# 运行脚本
+# 方式 1：下载后本地运行
 ./oracle_oci_tool.sh
+
+# 方式 2：直接远程运行
+bash <(curl -sL https://raw.githubusercontent.com/yhj945/tools/main/oracle/oracle_oci_tool.sh)
 ```
+
+无论使用哪种方式，脚本数据默认都会保存在 `~/.oracle_oci_tool`，避免因切换启动方式而丢失任务、邮件配置或创建配置。
 
 ## 主菜单
 
@@ -74,17 +79,29 @@
 - SMTP 密码/授权码
 - 收件人邮箱
 
-## 文件结构
+## 数据目录
 
+默认数据目录：
+
+```text
+~/.oracle_oci_tool/
+├── email_config.conf
+├── tasks/
+├── update_instance_config.json
+├── create_instance_config.json
+└── create_instance_config.draft.json
 ```
+
+说明：
+- 本地执行 `./oracle_oci_tool.sh` 和远程执行 `bash <(curl ...)` 使用同一个数据目录
+- 首次运行新版脚本时，如旧数据仍在脚本目录中，会自动迁移常见配置和任务到 `~/.oracle_oci_tool`
+- 如需自定义目录，可在运行前设置环境变量 `OCI_TOOL_HOME`
+
+## 脚本文件
+
+```text
 ./
-├── oracle_oci_tool.sh      # 主脚本
-├── email_config.conf       # 邮件配置（自动生成）
-├── tasks/                  # 后台任务数据（运行时生成）
-├── update_instance_config.json # 更新实例配置模板（手动/自动生成）
-├── create_instance_config.json # 创建实例参数配置（自动生成）
-├── create_instance_config.draft.json # 创建实例草稿配置（自动生成）
-└── retry_update.sh         # 重试脚本（自动生成）
+└── oracle_oci_tool.sh      # 主脚本
 ```
 
 ## 后台任务
