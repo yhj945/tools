@@ -31,6 +31,31 @@ An interactive Bash script for managing OCI compute instance configurations and 
 - [OCI CLI](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/cliconcepts.htm)
 - [jq](https://stedolan.github.io/jq/)
 - curl (for email notifications)
+- `column` (optional, used for aligned table output; the script falls back to plain text if it is missing)
+
+## Dependency Installation
+
+### Debian / Ubuntu
+
+```bash
+sudo apt update
+sudo apt install -y bash curl jq bsdextrautils
+```
+
+Notes:
+- `bsdextrautils` provides `column`
+- `OCI CLI` should be installed separately by following Oracle's official documentation
+
+### macOS
+
+```bash
+brew install jq
+```
+
+Notes:
+- macOS already includes `bash` and `curl`
+- `column` is typically available by default
+- `OCI CLI` should be installed separately by following Oracle's official documentation
 
 ## Quick Start
 

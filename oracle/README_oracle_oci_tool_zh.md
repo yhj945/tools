@@ -31,6 +31,31 @@
 - [OCI CLI](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/cliconcepts.htm)
 - [jq](https://stedolan.github.io/jq/)
 - curl（用于邮件通知）
+- `column`（可选，用于表格对齐显示；未安装时脚本会自动降级为普通文本显示）
+
+## 依赖安装
+
+### Debian / Ubuntu
+
+```bash
+sudo apt update
+sudo apt install -y bash curl jq bsdextrautils
+```
+
+说明：
+- `bsdextrautils` 提供 `column`
+- `OCI CLI` 需要按 Oracle 官方文档单独安装
+
+### macOS
+
+```bash
+brew install jq
+```
+
+说明：
+- macOS 自带 `bash` 和 `curl`
+- `column` 通常系统自带
+- `OCI CLI` 需要按 Oracle 官方文档单独安装
 
 ## 快速开始
 

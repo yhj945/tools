@@ -89,6 +89,24 @@ init_data_dir() {
     sync_legacy_data_dir
 }
 
+format_tabular_output() {
+    if command -v column >/dev/null 2>&1; then
+        column -t -s $'\t'
+    else
+        cat
+    fi
+}
+
+format_tabular_file() {
+    local table_file="$1"
+
+    if command -v column >/dev/null 2>&1; then
+        column -t -s $'\t' "$table_file"
+    else
+        cat "$table_file"
+    fi
+}
+
 # ================================
 # 邮件通知配置（默认值）
 # ================================
@@ -304,12 +322,55 @@ normalize_task_error() {
     printf '%s' "$raw_error" | jq -Rrs 'fromjson? // .' 2>/dev/null || printf '%s' "$raw_error"
 }
 
+# 从混合文本中提取 ServiceError 后的 JSON 错误对象
+extract_service_error_json() {
+    local raw_text="$1"
+
+    printf '%s\n' "$raw_text" | awk '
+        /ServiceError:/ {
+            capture=1
+            started=0
+            depth=0
+            buffer=""
+            next
+        }
+        capture {
+            if (!started && $0 ~ /^[[:space:]]*\{[[:space:]]*$/) {
+                started=1
+            }
+            if (started) {
+                buffer = buffer $0 "\n"
+                opens = gsub(/\{/, "{", $0)
+                closes = gsub(/\}/, "}", $0)
+                depth += opens - closes
+                if (depth == 0) {
+                    last_json = buffer
+                    capture=0
+                }
+            }
+        }
+        END {
+            if (last_json != "") {
+                printf "%s", last_json
+            }
+        }
+    '
+}
+
 # 将任务错误信息解析为 JSON 对象或原始字符串
 get_task_error_payload() {
     local raw_error="$1"
     local normalized_error
+    local service_error_json
 
     normalized_error=$(normalize_task_error "$raw_error")
+
+    service_error_json=$(extract_service_error_json "$normalized_error")
+    if [[ -n "$service_error_json" ]]; then
+        printf '%s' "$service_error_json" | jq -Rrs 'fromjson? // .' 2>/dev/null || printf 'null'
+        return 0
+    fi
+
     normalized_error=$(printf '%s' "$normalized_error" | sed '1 s/^ServiceError:[[:space:]]*//')
 
     printf '%s' "$normalized_error" | jq -Rrs 'fromjson? // .' 2>/dev/null || printf 'null'
@@ -952,7 +1013,7 @@ view_task_detail() {
                     echo -e "上次状态\t${last_status_color}${last_status}${NC}"
                     echo -e "上次尝试\t$last_attempt_time"
                     [[ -n "$created_instance_ocid" ]] && echo -e "已创建实例\t${created_instance_ocid:0:50}..."
-                } | column -t -s $'\t'
+                } | format_tabular_output
             else
                 {
                     echo -e "任务ID\t$task_id"
@@ -965,7 +1026,7 @@ view_task_detail() {
                     echo -e "执行次数\t$attempt"
                     echo -e "上次状态\t${last_status_color}${last_status}${NC}"
                     echo -e "上次尝试\t$last_attempt_time"
-                } | column -t -s $'\t'
+                } | format_tabular_output
             fi
             echo ""
 
@@ -1010,7 +1071,7 @@ view_task_detail() {
                     [[ -n "$error_status" && "$error_status" != "null" ]] && echo -e "HTTP状态\t$error_status"
                     [[ -n "$error_timestamp" && "$error_timestamp" != "null" ]] && echo -e "时间戳\t$error_timestamp"
                     [[ -n "$error_request_id" && "$error_request_id" != "null" ]] && echo -e "请求ID\t${error_request_id:0:40}..."
-                } | column -t -s $'\t'
+                } | format_tabular_output
                 echo ""
 
                 # 显示建议
@@ -1650,7 +1711,7 @@ list_instances() {
     done < <(echo "$instances_json" | jq -r '.data[].id' 2>/dev/null)
 
     # 显示表格（自动对齐）
-    column -t -s $'\t' "$table_data"
+    format_tabular_file "$table_data"
     rm -f "$table_data"
 
     echo ""
@@ -1696,7 +1757,7 @@ list_instances() {
                 echo -e "内存(GB)\t$selected_memory"
                 echo -e "形状\t$selected_shape"
                 echo -e "OCID\t$selected_ocid"
-            } | column -t -s $'\t'
+            } | format_tabular_output
             echo ""
 
             # 第二部分：完整 JSON
