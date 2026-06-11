@@ -53,13 +53,36 @@ resolve_data_dir() {
 
 SCRIPT_SOURCE_DIR="$(resolve_script_source_dir 2>/dev/null || true)"
 DATA_DIR="$(resolve_data_dir)"
-OCI_CONFIG_FILE="$HOME/.oci/config"
+OCI_HOME_DIR="${DATA_DIR}/oci"
+OCI_CONFIG_FILE="${OCI_HOME_DIR}/config"
+OCI_KEY_FILE_DEFAULT="${OCI_HOME_DIR}/oci_api_key.pem"
+LEGACY_OCI_CONFIG_FILE="$HOME/.oci/config"
+LEGACY_OCI_KEY_FILE="$HOME/.oci/oci_api_key.pem"
+OCI_CLI_INSTALL_ROOT="${DATA_DIR}/oracle-cli"
+OCI_CLI_BIN_DIR="${DATA_DIR}/bin"
+OCI_CLI_BIN="${OCI_CLI_BIN_DIR}/oci"
+CREATE_SSH_KEY_DIR="${DATA_DIR}/ssh"
+CREATE_SSH_PRIVATE_KEY_DEFAULT="${CREATE_SSH_KEY_DIR}/oci_instance_key"
+CREATE_SSH_PUBLIC_KEY_DEFAULT="${CREATE_SSH_PRIVATE_KEY_DEFAULT}.pub"
 UPDATE_INSTANCE_CONFIG="${DATA_DIR}/update_instance_config.json"
 CREATE_INSTANCE_CONFIG="${DATA_DIR}/create_instance_config.json"
 CREATE_INSTANCE_DRAFT_CONFIG="${DATA_DIR}/create_instance_config.draft.json"
 RETRY_SCRIPT="${DATA_DIR}/retry_update.sh"
 TASK_DIR="${DATA_DIR}/tasks"
-EMAIL_CONFIG_FILE="${DATA_DIR}/email_config.conf"
+NOTIFICATION_CONFIG_FILE="${DATA_DIR}/notification_config.conf"
+LEGACY_EMAIL_CONFIG_FILE="${DATA_DIR}/email_config.conf"
+EMAIL_CONFIG_FILE="$NOTIFICATION_CONFIG_FILE"
+DEPENDENCY_STATE_FILE="${DATA_DIR}/installed_dependencies.conf"
+BEGINNER_UPDATE_OCPUS_DEFAULT="4"
+BEGINNER_UPDATE_MEMORY_GB_DEFAULT="24"
+BEGINNER_UPDATE_BOOT_VOLUME_GB_DEFAULT="200"
+BEGINNER_CREATE_IMAGE_OS_DEFAULT="Canonical Ubuntu"
+BEGINNER_CREATE_IMAGE_OS_VERSION_DEFAULT="24.04"
+BEGINNER_CREATE_SHAPE_DEFAULT="VM.Standard.A1.Flex"
+BEGINNER_CREATE_OCPUS_DEFAULT="4"
+BEGINNER_CREATE_MEMORY_GB_DEFAULT="24"
+BEGINNER_CREATE_BOOT_VOLUME_GB_DEFAULT="200"
+BEGINNER_CREATE_BOOT_VOLUME_VPUS_DEFAULT="120"
 
 sync_legacy_data_dir() {
     local legacy_dir="$SCRIPT_SOURCE_DIR"
@@ -72,7 +95,7 @@ sync_legacy_data_dir() {
         "update_instance_config.json"
         "create_instance_config.json"
         "create_instance_config.draft.json"
-        "email_config.conf"
+        "notification_config.conf"
         "tasks"
     )
 
@@ -82,11 +105,54 @@ sync_legacy_data_dir() {
             cp -R "$legacy_dir/$item" "$DATA_DIR/$item" 2>/dev/null
         fi
     done
+
+    if [[ -e "$legacy_dir/email_config.conf" && ! -e "$NOTIFICATION_CONFIG_FILE" && ! -e "$LEGACY_EMAIL_CONFIG_FILE" ]]; then
+        cp "$legacy_dir/email_config.conf" "$NOTIFICATION_CONFIG_FILE" 2>/dev/null
+    fi
+}
+
+sync_legacy_notification_config() {
+    if [[ -f "$NOTIFICATION_CONFIG_FILE" ]]; then
+        return 0
+    fi
+
+    if [[ -f "$LEGACY_EMAIL_CONFIG_FILE" ]]; then
+        cp "$LEGACY_EMAIL_CONFIG_FILE" "$NOTIFICATION_CONFIG_FILE" 2>/dev/null || return 0
+        chmod 600 "$NOTIFICATION_CONFIG_FILE" 2>/dev/null || true
+    fi
+}
+
+sync_legacy_oci_config() {
+    if [[ -f "$OCI_CONFIG_FILE" || ! -f "$LEGACY_OCI_CONFIG_FILE" ]]; then
+        return 0
+    fi
+
+    mkdir -p "$OCI_HOME_DIR"
+    cp "$LEGACY_OCI_CONFIG_FILE" "$OCI_CONFIG_FILE" 2>/dev/null || return 0
+    chmod 600 "$OCI_CONFIG_FILE" 2>/dev/null || true
+
+    if [[ -f "$LEGACY_OCI_KEY_FILE" && ! -f "$OCI_KEY_FILE_DEFAULT" ]]; then
+        cp "$LEGACY_OCI_KEY_FILE" "$OCI_KEY_FILE_DEFAULT" 2>/dev/null || true
+        chmod 600 "$OCI_KEY_FILE_DEFAULT" 2>/dev/null || true
+    fi
+
+    if [[ -f "$OCI_KEY_FILE_DEFAULT" ]]; then
+        local legacy_key_escaped new_key_escaped
+        legacy_key_escaped=$(printf '%s\n' "$LEGACY_OCI_KEY_FILE" | sed 's/[\/&]/\\&/g')
+        new_key_escaped=$(printf '%s\n' "$OCI_KEY_FILE_DEFAULT" | sed 's/[\/&]/\\&/g')
+        sed -i.bak \
+            -e "s/^key_file=${legacy_key_escaped}$/key_file=${new_key_escaped}/" \
+            -e "s/^key_file=~\/.oci\/oci_api_key.pem$/key_file=${new_key_escaped}/" \
+            "$OCI_CONFIG_FILE" 2>/dev/null || true
+        rm -f "${OCI_CONFIG_FILE}.bak"
+    fi
 }
 
 init_data_dir() {
     mkdir -p "$DATA_DIR"
     sync_legacy_data_dir
+    sync_legacy_notification_config
+    sync_legacy_oci_config
 }
 
 format_tabular_output() {
@@ -107,17 +173,82 @@ format_tabular_file() {
     fi
 }
 
+create_timestamped_display_name() {
+    local base_name="$1"
+    local timestamp
+
+    timestamp="$(date +%Y%m%d-%H%M%S)"
+    base_name="${base_name//$'\r'/}"
+    [[ -z "$base_name" || "$base_name" == "null" ]] && base_name="oci-instance"
+    base_name="$(printf '%s' "$base_name" | sed -E 's/-[0-9]{8}-[0-9]{6}$//')"
+    [[ -z "$base_name" ]] && base_name="oci-instance"
+
+    printf '%s-%s\n' "$base_name" "$timestamp"
+}
+
+ensure_create_ssh_public_key() {
+    local ssh_public_key="$1"
+    local expanded_ssh_key
+
+    expanded_ssh_key="$(expand_path "$ssh_public_key")"
+    if [[ -n "$ssh_public_key" && -f "$expanded_ssh_key" ]]; then
+        log_info "复用已有 SSH 公钥: $expanded_ssh_key"
+        SELECT_RESULT="$ssh_public_key"
+        return 0
+    fi
+
+    if [[ -f "$CREATE_SSH_PUBLIC_KEY_DEFAULT" ]]; then
+        log_info "复用数据目录中的 SSH 公钥: $CREATE_SSH_PUBLIC_KEY_DEFAULT"
+        SELECT_RESULT="$CREATE_SSH_PUBLIC_KEY_DEFAULT"
+        return 0
+    fi
+
+    if ! command -v ssh-keygen >/dev/null 2>&1; then
+        log_error "未找到 ssh-keygen，无法自动生成 SSH 密钥对"
+        return 1
+    fi
+
+    mkdir -p "$CREATE_SSH_KEY_DIR"
+    chmod 700 "$CREATE_SSH_KEY_DIR" 2>/dev/null || true
+
+    if [[ -f "$CREATE_SSH_PRIVATE_KEY_DEFAULT" ]]; then
+        if ! ssh-keygen -y -f "$CREATE_SSH_PRIVATE_KEY_DEFAULT" > "$CREATE_SSH_PUBLIC_KEY_DEFAULT" 2>/dev/null; then
+            log_error "无法从已有私钥生成 SSH 公钥: $CREATE_SSH_PRIVATE_KEY_DEFAULT"
+            return 1
+        fi
+    elif ! ssh-keygen \
+        -t ed25519 \
+        -N "" \
+        -C "oracle-oci-tool-$(date +%Y%m%d-%H%M%S)" \
+        -f "$CREATE_SSH_PRIVATE_KEY_DEFAULT" >/dev/null 2>&1; then
+        log_error "自动生成 SSH 密钥对失败"
+        return 1
+    fi
+
+    chmod 600 "$CREATE_SSH_PRIVATE_KEY_DEFAULT" 2>/dev/null || true
+    chmod 644 "$CREATE_SSH_PUBLIC_KEY_DEFAULT" 2>/dev/null || true
+    log_info "已自动生成 SSH 密钥对"
+    echo "私钥: $CREATE_SSH_PRIVATE_KEY_DEFAULT"
+    echo "公钥: $CREATE_SSH_PUBLIC_KEY_DEFAULT"
+
+    SELECT_RESULT="$CREATE_SSH_PUBLIC_KEY_DEFAULT"
+    return 0
+}
+
 # ================================
-# 邮件通知配置（默认值）
+# 通知配置（默认值）
 # ================================
 SMTP_HOST=""
 SMTP_PORT=""
 SMTP_USER=""
 SMTP_PASS=""
 EMAIL_TO=""
+NOTIFY_METHOD="email"
+TG_BOT_ID=""
+TG_CHAT_ID=""
 
 # ================================
-# 加载邮件配置
+# 加载通知配置
 # ================================
 load_email_config() {
     if [[ -f "$EMAIL_CONFIG_FILE" ]]; then
@@ -134,12 +265,12 @@ reload_email_config_for_notification() {
 }
 
 # ================================
-# 保存邮件配置
+# 保存通知配置
 # ================================
 save_email_config() {
     mkdir -p "$(dirname "$EMAIL_CONFIG_FILE")"
     cat > "$EMAIL_CONFIG_FILE" << EOF
-# 邮件通知配置
+# 通知配置
 # 生成时间: $(date '+%Y-%m-%d %H:%M:%S')
 
 SMTP_HOST="${SMTP_HOST}"
@@ -147,66 +278,209 @@ SMTP_PORT="${SMTP_PORT}"
 SMTP_USER="${SMTP_USER}"
 SMTP_PASS="${SMTP_PASS}"
 EMAIL_TO="${EMAIL_TO}"
+NOTIFY_METHOD="${NOTIFY_METHOD}"
+TG_BOT_ID="${TG_BOT_ID}"
+TG_CHAT_ID="${TG_CHAT_ID}"
 EOF
     chmod 600 "$EMAIL_CONFIG_FILE"
-    log_success "邮件配置已保存到: $EMAIL_CONFIG_FILE"
+    log_success "通知配置已保存到: $EMAIL_CONFIG_FILE"
 }
 
 # ================================
-# 配置邮件参数
+# 配置通知参数
 # ================================
+resolve_telegram_chat_id() {
+    local bot_id="$1"
+    local updates chat_id
+
+    [[ -n "$bot_id" ]] || return 1
+    updates=$(curl -s "https://api.telegram.org/bot${bot_id}/getUpdates" 2>/dev/null)
+    chat_id=$(echo "$updates" | jq -r '
+        .result
+        | reverse
+        | .[]
+        | (.message.chat.id // .edited_message.chat.id // .channel_post.chat.id // .callback_query.message.chat.id // empty)
+    ' 2>/dev/null | head -1)
+
+    [[ -n "$chat_id" && "$chat_id" != "null" ]] || return 1
+    printf '%s\n' "$chat_id"
+}
+
+format_tg_bot_id_for_display() {
+    local bot_id="$1"
+    local prefix suffix
+
+    if [[ -z "$bot_id" ]]; then
+        printf '%s\n' "未设置"
+        return 0
+    fi
+
+    if [[ "$bot_id" == *:* ]]; then
+        prefix="${bot_id%%:*}"
+        suffix="${bot_id: -4}"
+        printf '%s\n' "${prefix}:...${suffix}"
+    else
+        printf '%s\n' "$bot_id"
+    fi
+}
+
+choose_default_smtp_settings() {
+    local smtp_choice
+
+    if [[ -n "$SMTP_HOST" && -n "$SMTP_PORT" ]]; then
+        return 0
+    fi
+
+    echo "Common SMTP defaults:"
+    echo "  1) QQ mail   smtp.qq.com:465"
+    echo "  2) 163 mail  smtp.163.com:465"
+    echo "  3) Custom"
+    echo ""
+    read -p "Select mail type [default: 1 QQ mail]: " smtp_choice
+    smtp_choice="${smtp_choice:-1}"
+
+    case "$smtp_choice" in
+        1)
+            SMTP_HOST="${SMTP_HOST:-smtp.qq.com}"
+            SMTP_PORT="${SMTP_PORT:-465}"
+            ;;
+        2)
+            SMTP_HOST="${SMTP_HOST:-smtp.163.com}"
+            SMTP_PORT="${SMTP_PORT:-465}"
+            ;;
+        3)
+            ;;
+        *)
+            log_warn "Invalid mail type, use QQ mail SMTP by default"
+            SMTP_HOST="${SMTP_HOST:-smtp.qq.com}"
+            SMTP_PORT="${SMTP_PORT:-465}"
+            ;;
+    esac
+}
+
 configure_email() {
+    configure_notifications
+}
+
+configure_notifications() {
     echo -e "${BOLD}========================================${NC}"
-    echo -e "${BOLD}配置邮件通知${NC}"
+    echo -e "${BOLD}配置通知${NC}"
     echo -e "${BOLD}========================================${NC}"
     echo ""
 
     # 显示当前配置
     if [[ -f "$EMAIL_CONFIG_FILE" ]]; then
         echo -e "${CYAN}当前配置:${NC}"
+        echo "  通知方式: ${NOTIFY_METHOD:-email}"
         echo "  SMTP 服务器: ${SMTP_HOST:-未设置}"
         echo "  SMTP 端口: ${SMTP_PORT:-未设置}"
         echo "  发件人邮箱: ${SMTP_USER:-未设置}"
         echo "  收件人邮箱: ${EMAIL_TO:-未设置}"
+        echo "  TG Bot ID: $(format_tg_bot_id_for_display "$TG_BOT_ID")"
+        echo "  TG Chat ID: ${TG_CHAT_ID:-未设置}"
         echo ""
     fi
 
-    echo "请输入邮件配置（直接回车保持当前值）:"
+    echo "通知方式:"
+    echo "  1) 邮件"
+    echo "  2) Telegram 机器人"
+    echo "  3) 邮件 + Telegram"
+    echo "  4) 关闭通知"
     echo ""
 
-    # SMTP 服务器
-    local new_host
-    read -p "SMTP 服务器 [当前: ${SMTP_HOST}]: " new_host
-    SMTP_HOST="${new_host:-$SMTP_HOST}"
+    local notify_choice
+    read -p "请选择通知方式 [当前: ${NOTIFY_METHOD:-email}]: " notify_choice
+    case "$notify_choice" in
+        1) NOTIFY_METHOD="email" ;;
+        2) NOTIFY_METHOD="telegram" ;;
+        3) NOTIFY_METHOD="both" ;;
+        4) NOTIFY_METHOD="none" ;;
+        "") NOTIFY_METHOD="${NOTIFY_METHOD:-email}" ;;
+        *) log_warn "无效通知方式，保持当前配置: ${NOTIFY_METHOD:-email}" ;;
+    esac
 
-    # SMTP 端口
-    local new_port
-    read -p "SMTP 端口 [当前: ${SMTP_PORT}]: " new_port
-    SMTP_PORT="${new_port:-$SMTP_PORT}"
+    if [[ "$NOTIFY_METHOD" == "email" || "$NOTIFY_METHOD" == "both" ]]; then
+        echo ""
+        echo "请输入邮件配置（直接回车保持当前值）:"
+        echo "Tips:"
+        echo "  QQ  mail: smtp.qq.com:465"
+        echo "  163 mail: smtp.163.com:465"
+        echo "  SMTP pass: use app password / auth code, not login password"
+        echo ""
+        choose_default_smtp_settings
 
-    # 发件人邮箱
-    local new_user
-    read -p "发件人邮箱 [当前: ${SMTP_USER}]: " new_user
-    SMTP_USER="${new_user:-$SMTP_USER}"
+        # SMTP 服务器
+        local new_host
+        read -p "SMTP 服务器 [当前: ${SMTP_HOST:-smtp.qq.com}]: " new_host
+        SMTP_HOST="${new_host:-${SMTP_HOST:-smtp.qq.com}}"
 
-    # SMTP 密码/授权码
-    local new_pass
-    read -p "SMTP 密码/授权码 [当前: ******]: " new_pass
-    if [[ -n "$new_pass" ]]; then
-        SMTP_PASS="$new_pass"
+        # SMTP 端口
+        local new_port
+        read -p "SMTP 端口 [当前: ${SMTP_PORT:-465}]: " new_port
+        SMTP_PORT="${new_port:-${SMTP_PORT:-465}}"
+
+        # 发件人邮箱
+        local new_user
+        read -p "发件人邮箱 [当前: ${SMTP_USER}]: " new_user
+        SMTP_USER="${new_user:-$SMTP_USER}"
+
+        # SMTP 密码/授权码
+        local new_pass
+        read -p "SMTP 密码/授权码 [当前: ******]: " new_pass
+        if [[ -n "$new_pass" ]]; then
+            SMTP_PASS="$new_pass"
+        fi
+
+        # 收件人邮箱
+        local new_to
+        read -p "收件人邮箱 [当前: ${EMAIL_TO}]: " new_to
+        EMAIL_TO="${new_to:-$EMAIL_TO}"
     fi
 
-    # 收件人邮箱
-    local new_to
-    read -p "收件人邮箱 [当前: ${EMAIL_TO}]: " new_to
-    EMAIL_TO="${new_to:-$EMAIL_TO}"
+    if [[ "$NOTIFY_METHOD" == "telegram" || "$NOTIFY_METHOD" == "both" ]]; then
+        echo ""
+        echo "请输入 Telegram 机器人配置（直接回车保持当前值）:"
+        echo "获取 TG Bot ID/Token:"
+        echo "  1) 在 Telegram 打开 @BotFather"
+        echo "  2) 发送 /newbot 创建机器人"
+        echo "  3) 复制 BotFather 返回的 Token，例如 123456789:AA..."
+        echo "  4) 打开新机器人，先给它发送任意消息"
+        echo "  5) 脚本会尝试自动获取 Chat ID"
+        echo ""
+
+        local new_tg_bot_id detected_chat_id new_tg_chat_id
+        read -p "TG Bot ID/Token [当前: $(format_tg_bot_id_for_display "$TG_BOT_ID")]: " new_tg_bot_id
+        TG_BOT_ID="${new_tg_bot_id:-$TG_BOT_ID}"
+
+        if [[ -n "$TG_BOT_ID" ]]; then
+            detected_chat_id="$(resolve_telegram_chat_id "$TG_BOT_ID" || true)"
+            if [[ -n "$detected_chat_id" ]]; then
+                TG_CHAT_ID="$detected_chat_id"
+                log_success "已自动获取 Telegram Chat ID: $TG_CHAT_ID"
+            else
+                log_warn "未能自动获取 Telegram Chat ID，请先给机器人发送任意消息"
+            fi
+        fi
+
+        if [[ -z "$TG_CHAT_ID" ]]; then
+            read -p "TG Chat ID [当前: ${TG_CHAT_ID:-未设置}，留空表示稍后配置]: " new_tg_chat_id
+            TG_CHAT_ID="${new_tg_chat_id:-$TG_CHAT_ID}"
+        fi
+    fi
 
     echo ""
     echo -e "${CYAN}配置摘要:${NC}"
-    echo "  SMTP 服务器: ${SMTP_HOST}"
-    echo "  SMTP 端口: ${SMTP_PORT}"
-    echo "  发件人邮箱: ${SMTP_USER}"
-    echo "  收件人邮箱: ${EMAIL_TO}"
+    echo "  通知方式: ${NOTIFY_METHOD}"
+    if [[ "$NOTIFY_METHOD" == "email" || "$NOTIFY_METHOD" == "both" ]]; then
+        echo "  SMTP 服务器: ${SMTP_HOST}"
+        echo "  SMTP 端口: ${SMTP_PORT}"
+        echo "  发件人邮箱: ${SMTP_USER}"
+        echo "  收件人邮箱: ${EMAIL_TO}"
+    fi
+    if [[ "$NOTIFY_METHOD" == "telegram" || "$NOTIFY_METHOD" == "both" ]]; then
+        echo "  TG Bot ID: $(format_tg_bot_id_for_display "$TG_BOT_ID")"
+        echo "  TG Chat ID: ${TG_CHAT_ID:-未设置}"
+    fi
     echo ""
 
     # 确认保存
@@ -220,33 +494,37 @@ configure_email() {
 }
 
 # ================================
-# 测试邮件发送
+# 测试通知发送
 # ================================
 test_email_config() {
+    test_notification_config
+}
+
+test_notification_config() {
     reload_email_config_for_notification
 
-    if [[ -z "$SMTP_HOST" || -z "$SMTP_PORT" || -z "$SMTP_USER" || -z "$SMTP_PASS" || -z "$EMAIL_TO" ]]; then
-        log_error "邮件配置不完整，请先配置邮件参数"
+    if [[ "${NOTIFY_METHOD:-email}" == "none" ]]; then
+        log_info "通知已关闭，跳过测试"
         return 1
     fi
 
     echo ""
-    read -p "是否发送测试邮件? [Y/n]: " -r
+    read -p "是否发送测试通知? [Y/n]: " -r
     [[ -z "$REPLY" ]] && REPLY="y"
     if [[ $REPLY =~ ^[Yy]$ ]]; then
-        send_email_notification "OCI 实例配置管理工具 测试邮件" "这是一封测试邮件\n发送时间: $(date '+%Y-%m-%d %H:%M:%S')\n如果您收到此邮件，说明邮件配置正确。"
+        send_notification "OCI 实例配置管理工具 测试通知" "这是一条测试通知\n发送时间: $(date '+%Y-%m-%d %H:%M:%S')\n如果您收到此通知，说明通知配置正确。"
     fi
 }
 
 # ================================
-# 邮件通知函数
+# 通知发送函数
 # ================================
 send_email_notification() {
     local subject="$1"
     local body="$2"
     local formatted_body
 
-    # 每次发送前重新加载邮件配置，确保后台任务也能使用最新保存的配置
+    # 每次发送前重新加载通知配置，确保后台任务也能使用最新保存的配置
     reload_email_config_for_notification
 
     # 将调用方传入的 \n 等转义序列转换为真实换行，避免邮件正文显示字面量
@@ -284,6 +562,75 @@ ${formatted_body}"
     fi
 
     return $exit_code
+}
+
+send_telegram_notification() {
+    local subject="$1"
+    local body="$2"
+    local formatted_body message payload response ok
+
+    reload_email_config_for_notification
+
+    if [[ -z "$TG_BOT_ID" || -z "$TG_CHAT_ID" ]]; then
+        log_warn "Telegram 配置不完整，跳过 TG 通知"
+        return 1
+    fi
+
+    formatted_body=$(printf '%b' "$body")
+    message="${subject}
+
+${formatted_body}"
+    payload=$(jq -cn \
+        --arg chat_id "$TG_CHAT_ID" \
+        --arg text "$message" \
+        '{chat_id: $chat_id, text: $text, disable_web_page_preview: true}')
+
+    response=$(curl -s \
+        -X POST \
+        -H "Content-Type: application/json" \
+        -d "$payload" \
+        "https://api.telegram.org/bot${TG_BOT_ID}/sendMessage" 2>/dev/null)
+    ok=$(echo "$response" | jq -r '.ok // false' 2>/dev/null)
+
+    if [[ "$ok" == "true" ]]; then
+        log_info "Telegram 通知已发送: ${subject}"
+        return 0
+    fi
+
+    log_warn "Telegram 通知发送失败"
+    return 1
+}
+
+send_notification() {
+    local subject="$1"
+    local body="$2"
+    local method
+    local failed="false"
+
+    reload_email_config_for_notification
+    method="${NOTIFY_METHOD:-email}"
+
+    case "$method" in
+        email)
+            send_email_notification "$subject" "$body" || failed="true"
+            ;;
+        telegram)
+            send_telegram_notification "$subject" "$body" || failed="true"
+            ;;
+        both)
+            send_email_notification "$subject" "$body" || failed="true"
+            send_telegram_notification "$subject" "$body" || failed="true"
+            ;;
+        none)
+            log_info "通知已关闭，跳过发送: ${subject}"
+            ;;
+        *)
+            log_warn "未知通知方式: ${method}，默认尝试邮件通知"
+            send_email_notification "$subject" "$body" || failed="true"
+            ;;
+    esac
+
+    [[ "$failed" != "true" ]]
 }
 
 # ================================
@@ -642,8 +989,8 @@ exec_background_task() {
 
             if [[ $? -eq 0 ]]; then
                 log_success "更新成功！"
-                # 发送邮件通知
-                send_email_notification "OCI 实例配置更新成功" "实例 ${instance_ocid} 配置更新成功\n更新内容:\n- OCPUs: ${target_ocpus}\n- Memory: ${target_memory} GB\n时间: $(date '+%Y-%m-%d %H:%M:%S')"
+                # 发送通知
+                send_notification "OCI 实例配置更新成功" "实例 ${instance_ocid} 配置更新成功\n更新内容:\n- OCPUs: ${target_ocpus}\n- Memory: ${target_memory} GB\n时间: $(date '+%Y-%m-%d %H:%M:%S')"
                 # 更新任务状态
                 update_task_status "$attempt" "success" ""
                 jq '.status = "completed" | .end_time = "'"$(date -Iseconds)"'"' \
@@ -750,8 +1097,8 @@ exec_background_task() {
 
             # 全部成功
             log_success "完整更新流程成功！"
-            # 发送邮件通知
-            send_email_notification "OCI 实例完整更新流程成功" "实例 ${instance_ocid} 完整更新流程成功\n\n更新内容:\n- OCPUs: ${target_ocpus}\n- Memory: ${target_memory} GB\n\n时间: $(date '+%Y-%m-%d %H:%M:%S')"
+            # 发送通知
+            send_notification "OCI 实例完整更新流程成功" "实例 ${instance_ocid} 完整更新流程成功\n\n更新内容:\n- OCPUs: ${target_ocpus}\n- Memory: ${target_memory} GB\n\n时间: $(date '+%Y-%m-%d %H:%M:%S')"
             update_task_status "$attempt" "success" ""
             # 更新任务状态
             jq '.status = "completed" | .end_time = "'"$(date -Iseconds)"'"' \
@@ -1320,11 +1667,98 @@ show_header() {
 detect_package_manager() {
     if command -v apt-get >/dev/null 2>&1; then
         echo "apt"
+    elif command -v dnf >/dev/null 2>&1; then
+        echo "dnf"
+    elif command -v yum >/dev/null 2>&1; then
+        echo "yum"
+    elif command -v pacman >/dev/null 2>&1; then
+        echo "pacman"
+    elif command -v zypper >/dev/null 2>&1; then
+        echo "zypper"
+    elif command -v apk >/dev/null 2>&1; then
+        echo "apk"
     elif command -v brew >/dev/null 2>&1; then
         echo "brew"
     else
         echo "unknown"
     fi
+}
+
+dependency_package_for_tool() {
+    local manager="$1"
+    local tool_name="$2"
+
+    case "$tool_name" in
+        jq) echo "jq" ;;
+        curl) echo "curl" ;;
+        python3)
+            case "$manager" in
+                pacman) echo "python" ;;
+                brew) echo "python" ;;
+                *) echo "python3" ;;
+            esac
+            ;;
+        python3_venv)
+            case "$manager" in
+                apt) echo "python3-venv" ;;
+                zypper) echo "python3-venv" ;;
+                pacman) echo "python" ;;
+                brew) echo "python" ;;
+                apk) echo "py3-virtualenv" ;;
+                dnf|yum) echo "python3" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        column)
+            case "$manager" in
+                apt) echo "bsdextrautils" ;;
+                dnf|yum|pacman|zypper|apk|brew) echo "util-linux" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        ssh_keygen)
+            case "$manager" in
+                apt|apk) echo "openssh-client" ;;
+                brew) echo "openssh" ;;
+                dnf|yum|zypper) echo "openssh-clients" ;;
+                pacman) echo "openssh" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+record_installed_dependency() {
+    local manager="$1"
+    local package_name="$2"
+
+    mkdir -p "$DATA_DIR"
+    touch "$DEPENDENCY_STATE_FILE"
+    if ! grep -qx "${manager}:${package_name}" "$DEPENDENCY_STATE_FILE" 2>/dev/null; then
+        echo "${manager}:${package_name}" >> "$DEPENDENCY_STATE_FILE"
+    fi
+}
+
+append_unique_package() {
+    local package_name="$1"
+    shift
+    local existing
+
+    for existing in "$@"; do
+        [[ "$existing" == "$package_name" ]] && return 1
+    done
+    return 0
+}
+
+remove_recorded_dependency() {
+    local manager="$1"
+    local package_name="$2"
+    local temp_file="${DEPENDENCY_STATE_FILE}.tmp"
+
+    [[ -f "$DEPENDENCY_STATE_FILE" ]] || return 0
+    grep -vx "${manager}:${package_name}" "$DEPENDENCY_STATE_FILE" > "$temp_file" 2>/dev/null || true
+    mv "$temp_file" "$DEPENDENCY_STATE_FILE"
 }
 
 run_privileged_command() {
@@ -1349,6 +1783,21 @@ install_system_packages() {
         apt)
             run_privileged_command "apt-get update && apt-get install -y $*"
             ;;
+        dnf)
+            run_privileged_command "dnf install -y $*"
+            ;;
+        yum)
+            run_privileged_command "yum install -y $*"
+            ;;
+        pacman)
+            run_privileged_command "pacman -Sy --noconfirm $*"
+            ;;
+        zypper)
+            run_privileged_command "zypper --non-interactive install $*"
+            ;;
+        apk)
+            run_privileged_command "apk add --no-cache $*"
+            ;;
         brew)
             brew install "$@"
             ;;
@@ -1365,6 +1814,15 @@ package_is_installed() {
     case "$manager" in
         apt)
             dpkg -s "$package_name" >/dev/null 2>&1
+            ;;
+        dnf|yum|zypper)
+            rpm -q "$package_name" >/dev/null 2>&1
+            ;;
+        pacman)
+            pacman -Q "$package_name" >/dev/null 2>&1
+            ;;
+        apk)
+            apk info -e "$package_name" >/dev/null 2>&1
             ;;
         brew)
             brew list --formula "$package_name" >/dev/null 2>&1
@@ -1387,6 +1845,21 @@ uninstall_system_packages() {
         apt)
             run_privileged_command "apt-get remove -y $*"
             ;;
+        dnf)
+            run_privileged_command "dnf remove -y $*"
+            ;;
+        yum)
+            run_privileged_command "yum remove -y $*"
+            ;;
+        pacman)
+            run_privileged_command "pacman -Rns --noconfirm $*"
+            ;;
+        zypper)
+            run_privileged_command "zypper --non-interactive remove $*"
+            ;;
+        apk)
+            run_privileged_command "apk del $*"
+            ;;
         brew)
             brew uninstall "$@"
             ;;
@@ -1396,20 +1869,135 @@ uninstall_system_packages() {
     esac
 }
 
+uninstall_recorded_dependencies() {
+    local entries=("$@")
+    local entry manager package_name
+    local removed_any="false"
+    local failed_any="false"
+
+    if [[ ${#entries[@]} -eq 0 ]]; then
+        log_info "没有记录到由脚本自动安装的系统依赖"
+        return 0
+    fi
+
+    echo ""
+    log_info "正在卸载脚本自动安装的系统依赖..."
+
+    for entry in "${entries[@]}"; do
+        [[ -z "$entry" || "$entry" != *:* ]] && continue
+        manager="${entry%%:*}"
+        package_name="${entry#*:}"
+
+        if package_is_installed "$manager" "$package_name"; then
+            if uninstall_system_packages "$manager" "$package_name"; then
+                log_success "已卸载依赖: ${package_name}"
+                remove_recorded_dependency "$manager" "$package_name"
+                removed_any="true"
+            else
+                log_warn "依赖卸载失败: ${package_name}"
+                failed_any="true"
+            fi
+        else
+            remove_recorded_dependency "$manager" "$package_name"
+        fi
+    done
+
+    if [[ "$removed_any" != "true" && "$failed_any" != "true" ]]; then
+        log_info "记录中的系统依赖当前均未安装"
+    fi
+
+    [[ "$failed_any" != "true" ]]
+}
+
+is_private_tool_dir() {
+    local dir_path="$1"
+
+    [[ ! -L "$dir_path" ]] || return 1
+    mkdir -p "$dir_path"
+    [[ ! -L "$dir_path" ]] || return 1
+    chmod 700 "$dir_path" 2>/dev/null || true
+
+    [[ -d "$dir_path" ]] || return 1
+    [[ "$dir_path" == "$HOME"/* ]] || return 1
+    [[ -O "$dir_path" ]] || return 1
+    [[ -w "$dir_path" ]] || return 1
+
+    local permissions
+    permissions=$(stat -c '%a' "$dir_path" 2>/dev/null || stat -f '%Lp' "$dir_path" 2>/dev/null)
+    [[ -n "$permissions" ]] || return 1
+    [[ $((10#$permissions % 100)) -eq 0 ]]
+}
+
+configure_oci_cli_runtime_env() {
+    export OCI_CLI_CONFIG_FILE="$OCI_CONFIG_FILE"
+
+    if [[ -x "$OCI_CLI_BIN" ]]; then
+        case ":$PATH:" in
+            *":$OCI_CLI_BIN_DIR:"*) ;;
+            *) export PATH="$OCI_CLI_BIN_DIR:$PATH" ;;
+        esac
+        hash -r 2>/dev/null || true
+    fi
+}
+
 install_oci_cli_interactive() {
-    echo ""
-    log_info "将启动 OCI CLI 官方安装程序"
-    echo "安装命令:"
-    echo "  bash -c \"\$(curl -L https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh)\""
-    echo ""
-    read -p "是否继续安装 OCI CLI? [Y/n]: " -r
-    [[ -z "$REPLY" ]] && REPLY="y"
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        log_info "已跳过 OCI CLI 安装"
+    local installer_url="https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh"
+    local install_dir="${OCI_CLI_INSTALL_ROOT}/installations/latest-$(date +%Y%m%d-%H%M%S)_$$"
+    local exec_dir="$OCI_CLI_BIN_DIR"
+    local script_dir="$OCI_CLI_BIN_DIR"
+    local installer_file="${OCI_HOME_DIR}/oci-cli-install.sh"
+    local installer_home="${OCI_HOME_DIR}/oci-cli-installer-home-$(date +%Y%m%d-%H%M%S)_$$"
+
+    if ! is_private_tool_dir "$OCI_HOME_DIR" || ! is_private_tool_dir "$OCI_CLI_INSTALL_ROOT" || ! is_private_tool_dir "$exec_dir"; then
+        log_error "OCI 目录权限不安全，已停止 OCI CLI 自动安装: $OCI_HOME_DIR"
         return 1
     fi
 
-    bash -c "$(curl -L https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh)"
+    mkdir -p "$install_dir"
+    if ! is_private_tool_dir "$install_dir"; then
+        log_error "安装目录权限不安全，已停止 OCI CLI 自动安装: $install_dir"
+        return 1
+    fi
+
+    mkdir -p "$installer_home"
+    if ! is_private_tool_dir "$installer_home"; then
+        log_error "安装器临时目录权限不安全，已停止 OCI CLI 自动安装: $installer_home"
+        return 1
+    fi
+
+    echo ""
+    log_info "将自动启动 OCI CLI 官方安装程序"
+    echo "安装版本: OCI CLI 最新版本"
+    echo "安装目录: $install_dir"
+    echo "可执行目录: $exec_dir"
+    echo "环境变量: 仅在本脚本运行期间临时使用，不写入用户 ~/.zshrc 或 ~/.bashrc"
+    echo ""
+
+    if ! curl -fsSL "$installer_url" -o "$installer_file"; then
+        rm -rf "$installer_home"
+        log_error "下载 OCI CLI 安装脚本失败"
+        return 1
+    fi
+
+    HOME="$installer_home" bash "$installer_file" \
+        --accept-all-defaults \
+        --install-dir "$install_dir" \
+        --exec-dir "$exec_dir" \
+        --script-dir "$script_dir" \
+        --rc-file-path "${installer_home}/oci-cli-installer.rc"
+    local exit_code=$?
+    rm -f "$installer_file"
+    rm -rf "$installer_home"
+
+    if [[ $exit_code -eq 0 ]]; then
+        configure_oci_cli_runtime_env
+        if ! "$exec_dir/oci" --version >/dev/null 2>&1; then
+            log_error "OCI CLI 安装后验证失败"
+            return 1
+        fi
+    fi
+
+    return $exit_code
 }
 
 prompt_install_missing_dependencies() {
@@ -1417,12 +2005,16 @@ prompt_install_missing_dependencies() {
     local missing_jq="$2"
     local missing_curl="$3"
     local missing_column="$4"
+    local missing_python3="${5:-false}"
+    local missing_python3_venv="${6:-false}"
+    local missing_ssh_keygen="${7:-false}"
     local manager
     local install_packages=()
+    local record_packages=()
 
     manager="$(detect_package_manager)"
 
-    if [[ "$missing_jq" == "false" && "$missing_curl" == "false" && "$missing_column" == "false" && "$missing_oci" == "false" ]]; then
+    if [[ "$missing_jq" == "false" && "$missing_curl" == "false" && "$missing_column" == "false" && "$missing_oci" == "false" && "$missing_python3" == "false" && "$missing_python3_venv" == "false" && "$missing_ssh_keygen" == "false" ]]; then
         return 0
     fi
 
@@ -1432,40 +2024,51 @@ prompt_install_missing_dependencies() {
     [[ "$missing_jq" == "true" ]] && echo "  - jq"
     [[ "$missing_curl" == "true" ]] && echo "  - curl"
     [[ "$missing_column" == "true" ]] && echo "  - column（用于表格对齐显示，可选）"
+    [[ "$missing_python3" == "true" ]] && echo "  - python3"
+    [[ "$missing_python3_venv" == "true" ]] && echo "  - python3 venv"
+    [[ "$missing_ssh_keygen" == "true" ]] && echo "  - ssh-keygen（用于自动生成实例登录密钥）"
     echo ""
-    read -p "是否立即尝试安装缺失依赖? [Y/n]: " -r
-    [[ -z "$REPLY" ]] && REPLY="y"
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        log_info "已跳过自动安装"
-        return 1
-    fi
+    log_info "将自动尝试安装缺失依赖"
 
-    case "$manager" in
-        apt)
-            [[ "$missing_jq" == "true" ]] && install_packages+=("jq")
-            [[ "$missing_curl" == "true" ]] && install_packages+=("curl")
-            [[ "$missing_column" == "true" ]] && install_packages+=("bsdextrautils")
-            ;;
-        brew)
-            [[ "$missing_jq" == "true" ]] && install_packages+=("jq")
-            [[ "$missing_curl" == "true" ]] && install_packages+=("curl")
-            ;;
-        *)
-            ;;
-    esac
+    local tool_name package_name
+    for tool_name in jq curl column python3 python3_venv ssh_keygen; do
+        case "$tool_name" in
+            jq) [[ "$missing_jq" != "true" ]] && continue ;;
+            curl) [[ "$missing_curl" != "true" ]] && continue ;;
+            column) [[ "$missing_column" != "true" ]] && continue ;;
+            python3) [[ "$missing_python3" != "true" ]] && continue ;;
+            python3_venv) [[ "$missing_python3_venv" != "true" ]] && continue ;;
+            ssh_keygen) [[ "$missing_ssh_keygen" != "true" ]] && continue ;;
+        esac
+
+        if package_name="$(dependency_package_for_tool "$manager" "$tool_name")"; then
+            if append_unique_package "$package_name" "${install_packages[@]}"; then
+                install_packages+=("$package_name")
+            fi
+        fi
+    done
 
     if [[ ${#install_packages[@]} -gt 0 ]]; then
+        for package_name in "${install_packages[@]}"; do
+            if ! package_is_installed "$manager" "$package_name"; then
+                record_packages+=("$package_name")
+            fi
+        done
+
         if install_system_packages "$manager" "${install_packages[@]}"; then
             log_success "系统依赖安装完成"
+            for package_name in "${record_packages[@]}"; do
+                record_installed_dependency "$manager" "$package_name"
+            done
         else
-            log_warn "系统依赖自动安装失败，请手动安装"
+            log_warn "系统依赖自动安装失败"
         fi
-    elif [[ "$missing_jq" == "true" || "$missing_curl" == "true" || "$missing_column" == "true" ]]; then
-        log_warn "未识别到支持的包管理器，请手动安装系统依赖"
+    elif [[ "$missing_jq" == "true" || "$missing_curl" == "true" || "$missing_column" == "true" || "$missing_python3" == "true" || "$missing_python3_venv" == "true" || "$missing_ssh_keygen" == "true" ]]; then
+        log_warn "未识别到支持的包管理器，无法自动安装系统依赖"
     fi
 
     if [[ "$missing_oci" == "true" ]]; then
-        install_oci_cli_interactive || log_warn "OCI CLI 安装未完成"
+        install_oci_cli_interactive || log_warn "OCI CLI 自动安装未完成"
     fi
 
     return 0
@@ -1489,6 +2092,10 @@ stop_all_running_tasks() {
 remove_oci_cli_installation() {
     local removed_any="false"
     local candidates=(
+        "$OCI_CLI_BIN"
+        "$OCI_CLI_BIN_DIR/oci-cli"
+        "$OCI_CLI_BIN_DIR/oci_autocomplete.sh"
+        "$OCI_CLI_INSTALL_ROOT"
         "$HOME/bin/oci"
         "$HOME/bin/oci-cli"
         "$HOME/bin/oci_autocomplete.sh"
@@ -1527,8 +2134,13 @@ uninstall_script() {
         return 0
     fi
 
-    local package_manager
-    package_manager="$(detect_package_manager)"
+    local recorded_dependency_entries=()
+    if [[ -f "$DEPENDENCY_STATE_FILE" ]]; then
+        local dependency_entry
+        while IFS= read -r dependency_entry; do
+            [[ -n "$dependency_entry" ]] && recorded_dependency_entries+=("$dependency_entry")
+        done < "$DEPENDENCY_STATE_FILE"
+    fi
 
     echo ""
     read -p "是否先停止所有后台任务? [Y/n]: " -r
@@ -1567,10 +2179,10 @@ uninstall_script() {
         fi
 
         if [[ -d "$HOME/.oci" ]]; then
-            read -p "是否删除整个 ~/.oci 目录中的剩余文件? [y/N]: " -r
+            read -p "是否删除整个旧 ~/.oci 目录中的剩余文件? [y/N]: " -r
             if [[ $REPLY =~ ^[Yy]$ ]]; then
                 rm -rf "$HOME/.oci"
-                log_success "已删除 ~/.oci 目录"
+                log_success "已删除旧 ~/.oci 目录"
             fi
         fi
     fi
@@ -1582,42 +2194,7 @@ uninstall_script() {
         remove_oci_cli_installation
     fi
 
-    local dependency_packages=()
-    case "$package_manager" in
-        apt)
-            package_is_installed "$package_manager" "jq" && dependency_packages+=("jq")
-            package_is_installed "$package_manager" "bsdextrautils" && dependency_packages+=("bsdextrautils")
-            ;;
-        brew)
-            package_is_installed "$package_manager" "jq" && dependency_packages+=("jq")
-            ;;
-    esac
-
-    if [[ ${#dependency_packages[@]} -gt 0 ]]; then
-        echo ""
-        echo "可卸载的辅助依赖: ${dependency_packages[*]}"
-        read -p "是否卸载这些辅助依赖? [y/N]: " -r
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            if uninstall_system_packages "$package_manager" "${dependency_packages[@]}"; then
-                log_success "辅助依赖卸载完成"
-            else
-                log_warn "辅助依赖卸载失败，请手动检查"
-            fi
-        fi
-    fi
-
-    if [[ "$package_manager" != "unknown" ]]; then
-        echo ""
-        echo -e "${YELLOW}提示: curl/bash 通常为系统关键组件，默认不自动卸载${NC}"
-        read -p "是否尝试卸载 curl? [y/N]: " -r
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            if uninstall_system_packages "$package_manager" "curl"; then
-                log_success "curl 卸载命令已执行"
-            else
-                log_warn "curl 卸载失败，请手动检查"
-            fi
-        fi
-    fi
+    uninstall_recorded_dependencies "${recorded_dependency_entries[@]}"
 
     if [[ -n "$SCRIPT_SOURCE_DIR" && -f "$SCRIPT_SOURCE_DIR/oracle_oci_tool.sh" ]]; then
         echo ""
@@ -1641,11 +2218,13 @@ uninstall_script() {
 # 检查 OCI CLI 是否安装
 # ================================
 check_oci_cli() {
+    configure_oci_cli_runtime_env
+
     if ! command -v oci &> /dev/null; then
         log_error "OCI CLI 未安装"
         echo ""
-        echo "安装方法:"
-        echo "  bash -c \"\$(curl -L https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh)\""
+        echo "可执行自动安装:"
+        echo "  选择 [1] 检查 OCI 环境，脚本会安装到 ${DATA_DIR} 并临时配置当前运行环境"
         echo ""
         return 1
     fi
@@ -1668,6 +2247,8 @@ check_oci_config() {
 # 检查 OCI 环境
 # ================================
 check_oci_environment() {
+    local allow_auto_install="${1:-true}"
+
     show_header
     echo -e "${BOLD}[1] 检查 OCI 环境${NC}"
     echo "========================================"
@@ -1678,6 +2259,9 @@ check_oci_environment() {
     local missing_jq="false"
     local missing_curl="false"
     local missing_column="false"
+    local missing_python3="false"
+    local missing_python3_venv="false"
+    local missing_ssh_keygen="false"
 
     # 检查 OCI CLI
     echo -n "检查 OCI CLI... "
@@ -1711,6 +2295,27 @@ check_oci_environment() {
         missing_curl="true"
     fi
 
+    # 检查 Python 3（OCI CLI 安装器需要）
+    echo -n "检查 python3... "
+    if command -v python3 &> /dev/null; then
+        echo -e "${GREEN}✓ 已安装${NC}"
+    else
+        echo -e "${YELLOW}✗ 未安装${NC}"
+        all_ok=false
+        missing_python3="true"
+        missing_python3_venv="true"
+    fi
+
+    # 检查 Python venv（OCI CLI 安装器需要）
+    echo -n "检查 python3 venv... "
+    if command -v python3 &> /dev/null && python3 -m venv --help >/dev/null 2>&1; then
+        echo -e "${GREEN}✓ 可用${NC}"
+    else
+        echo -e "${YELLOW}✗ 不可用${NC}"
+        all_ok=false
+        missing_python3_venv="true"
+    fi
+
     # 检查 column（可选）
     echo -n "检查 column... "
     if command -v column &> /dev/null; then
@@ -1718,6 +2323,16 @@ check_oci_environment() {
     else
         echo -e "${YELLOW}✗ 未安装${NC} (可选，将降级为普通文本显示)"
         missing_column="true"
+    fi
+
+    # 检查 ssh-keygen（自动生成实例 SSH 密钥需要）
+    echo -n "检查 ssh-keygen... "
+    if command -v ssh-keygen &> /dev/null; then
+        echo -e "${GREEN}✓ 已安装${NC}"
+    else
+        echo -e "${YELLOW}✗ 未安装${NC}"
+        all_ok=false
+        missing_ssh_keygen="true"
     fi
 
     # 检查 OCI 配置
@@ -1763,11 +2378,17 @@ check_oci_environment() {
         log_warn "部分检查未通过，请先配置环境"
     fi
 
-    if [[ "$missing_oci" == "true" || "$missing_jq" == "true" || "$missing_curl" == "true" || "$missing_column" == "true" ]]; then
-        prompt_install_missing_dependencies "$missing_oci" "$missing_jq" "$missing_curl" "$missing_column"
+    if [[ "$allow_auto_install" == "true" && ( "$missing_oci" == "true" || "$missing_jq" == "true" || "$missing_curl" == "true" || "$missing_column" == "true" || "$missing_python3" == "true" || "$missing_python3_venv" == "true" || "$missing_ssh_keygen" == "true" ) ]]; then
+        prompt_install_missing_dependencies "$missing_oci" "$missing_jq" "$missing_curl" "$missing_column" "$missing_python3" "$missing_python3_venv" "$missing_ssh_keygen"
+        echo ""
+        log_info "依赖安装流程结束，正在重新检查环境..."
+        sleep 1
+        check_oci_environment "false"
+        return $?
     fi
 
     pause
+    return 0
 }
 
 # ================================
@@ -1885,7 +2506,7 @@ init_oci_config() {
 
     # 私钥文件
     echo ""
-    local default_key="${existing_key:-$HOME/.oci/oci_api_key.pem}"
+    local default_key="${existing_key:-$OCI_KEY_FILE_DEFAULT}"
     echo -e "私钥文件路径: ${CYAN}$default_key${NC}"
     read -p "按回车保持，或输入新路径: " key_input
     KEY_FILE="${key_input:-$default_key}"
@@ -1903,6 +2524,7 @@ init_oci_config() {
     echo -e "${BOLD}配置摘要:${NC}"
     echo "  用户 OCID:     $USER_OCID"
     echo "  租户 OCID:     $TENANCY_OCID"
+    echo "  密钥指纹:      $FINGERPRINT"
     echo "  区域:          $REGION"
     echo "  私钥文件:      $KEY_FILE"
     echo "========================================"
@@ -2080,17 +2702,17 @@ list_instances() {
     echo ""
 
     # 提供选择功能
-    echo -e "${CYAN}提示: 输入序号选择实例查看完整信息，或按回车返回${NC}"
+    echo -e "${CYAN}提示: 输入上方实例列表左侧的序号查看完整信息，或按回车返回${NC}"
     echo ""
 
-    read -p "请选择实例序号 [1-${instance_count}]，或按回车返回: " choice
+    read -p "请输入上方实例列表左侧的序号 [1-${instance_count}]，或按回车返回: " choice
 
     if [[ -z "$choice" ]]; then
         pause
         return 0
     fi
 
-    if [[ "$choice" =~ ^[0-9]+$ && "$choice" -le "$instance_count" && "$choice" -ge 1 ]]; then
+    if is_valid_list_choice "$choice" "$instance_count"; then
         local selected_ocid="${INSTANCE_OCIDS[$choice]}"
 
         # 获取实例详细信息
@@ -2436,6 +3058,134 @@ update_instance_config_direct() {
     create_background_task "direct_update_instance" "$INSTANCE_OCID" "$TARGET_OCPUS" "$TARGET_MEMORY" "$RETRY_INTERVAL"
 }
 
+resize_instance_boot_volume() {
+    local instance_ocid="$1"
+    local target_size_gb="$2"
+
+    local instance_json compartment_id availability_domain
+    instance_json=$(oci compute instance get \
+        --instance-id "$instance_ocid" \
+        --output json 2>/dev/null)
+    if [[ -z "$instance_json" ]]; then
+        log_warn "无法获取实例信息，跳过启动盘扩容"
+        return 1
+    fi
+
+    compartment_id=$(echo "$instance_json" | jq -r '.data["compartment-id"] // empty')
+    availability_domain=$(echo "$instance_json" | jq -r '.data["availability-domain"] // empty')
+    if [[ -z "$compartment_id" || -z "$availability_domain" ]]; then
+        log_warn "无法读取实例区间或可用性域，跳过启动盘扩容"
+        return 1
+    fi
+
+    local attachment_json boot_volume_id current_size
+    attachment_json=$(oci compute boot-volume-attachment list \
+        --compartment-id "$compartment_id" \
+        --availability-domain "$availability_domain" \
+        --instance-id "$instance_ocid" \
+        --all \
+        --output json 2>/dev/null)
+    boot_volume_id=$(echo "$attachment_json" | jq -r '.data[0]["boot-volume-id"] // empty' 2>/dev/null)
+    if [[ -z "$boot_volume_id" ]]; then
+        log_warn "未找到实例启动盘，跳过启动盘扩容"
+        return 1
+    fi
+
+    current_size=$(oci bv boot-volume get \
+        --boot-volume-id "$boot_volume_id" \
+        --query 'data."size-in-gbs"' \
+        --raw-output 2>/dev/null)
+    if [[ "$current_size" =~ ^[0-9]+$ && "$current_size" -ge "$target_size_gb" ]]; then
+        log_info "启动盘当前 ${current_size}GB，已不小于目标 ${target_size_gb}GB"
+        return 0
+    fi
+
+    log_info "正在将启动盘扩容到 ${target_size_gb}GB..."
+    if oci bv boot-volume update \
+        --boot-volume-id "$boot_volume_id" \
+        --size-in-gbs "$target_size_gb" \
+        --force \
+        --output json >/dev/null 2>&1; then
+        log_success "启动盘扩容命令已执行: ${target_size_gb}GB"
+        return 0
+    fi
+
+    log_warn "启动盘扩容失败，实例 OCPU/内存更新不受影响"
+    return 1
+}
+
+beginner_update_instance() {
+    local instance_count="$1"
+    local choice target_ocpus target_memory target_boot_volume retry_interval selected_ocid
+
+    echo ""
+    echo -e "${BOLD}一键修改实例配置${NC}"
+    echo "----------------------------------------"
+    echo "默认会修改为:"
+    echo "  OCPU:       ${BEGINNER_UPDATE_OCPUS_DEFAULT}"
+    echo "  内存:       ${BEGINNER_UPDATE_MEMORY_GB_DEFAULT} GB"
+    echo "  启动盘:     ${BEGINNER_UPDATE_BOOT_VOLUME_GB_DEFAULT} GB"
+    echo "  执行方式:   直接更新 OCPU/内存，并尝试在线扩容启动盘"
+    echo ""
+
+    read_instance_list_choice choice "$instance_count"
+    if ! is_valid_list_choice "$choice" "$instance_count"; then
+        log_invalid_list_choice "$choice" "$instance_count"
+        return 1
+    fi
+
+    selected_ocid="${INSTANCE_OCIDS[$choice]}"
+    read -p "目标 OCPU [默认: ${BEGINNER_UPDATE_OCPUS_DEFAULT}]: " target_ocpus
+    target_ocpus="${target_ocpus:-$BEGINNER_UPDATE_OCPUS_DEFAULT}"
+    read -p "目标内存 GB [默认: ${BEGINNER_UPDATE_MEMORY_GB_DEFAULT}]: " target_memory
+    target_memory="${target_memory:-$BEGINNER_UPDATE_MEMORY_GB_DEFAULT}"
+    read -p "目标启动盘 GB [默认: ${BEGINNER_UPDATE_BOOT_VOLUME_GB_DEFAULT}]: " target_boot_volume
+    target_boot_volume="${target_boot_volume:-$BEGINNER_UPDATE_BOOT_VOLUME_GB_DEFAULT}"
+    read -p "后台重试间隔秒 [默认: 10]: " retry_interval
+    retry_interval="${retry_interval:-10}"
+
+    if [[ ! "$target_ocpus" =~ ^[0-9]+([.][0-9]+)?$ || ! "$target_memory" =~ ^[0-9]+([.][0-9]+)?$ || ! "$target_boot_volume" =~ ^[0-9]+$ ]]; then
+        log_error "目标 OCPU、内存或启动盘大小格式无效"
+        return 1
+    fi
+
+    echo ""
+    echo "即将执行:"
+    echo "  实例:       ${selected_ocid:0:50}..."
+    echo "  OCPU:       $target_ocpus"
+    echo "  内存:       ${target_memory} GB"
+    echo "  启动盘:     ${target_boot_volume} GB"
+    echo ""
+    read -p "确认一键修改? [Y/n]: " -r
+    [[ -z "$REPLY" ]] && REPLY="y"
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        log_info "操作已取消"
+        return 0
+    fi
+
+    local update_result exit_code
+    log_info "正在更新 OCPU/内存..."
+    update_result=$(oci compute instance update \
+        --instance-id "$selected_ocid" \
+        --shape-config "{\"ocpus\": $target_ocpus, \"memory-in-gbs\": $target_memory}" \
+        --force \
+        --output json 2>&1)
+    exit_code=$?
+
+    if [[ $exit_code -eq 0 ]]; then
+        log_success "OCPU/内存更新命令执行成功"
+    else
+        log_error "OCPU/内存更新失败，将创建后台任务自动重试"
+        echo "$update_result"
+        create_background_task "direct_update_instance" "$selected_ocid" "$target_ocpus" "$target_memory" "$retry_interval" "true"
+    fi
+
+    resize_instance_boot_volume "$selected_ocid" "$target_boot_volume" || true
+    echo ""
+    log_success "一键修改实例配置流程已完成"
+    pause
+}
+
 # ================================
 # 生成更新配置模板
 # ================================
@@ -2617,11 +3367,13 @@ update_instance_from_file() {
         done
         echo "  0) 返回"
         echo ""
-        read -p "请选择配置文件: " file_choice
+        read -p "请输入上方配置文件列表左侧的序号 [1-${#json_files[@]}]，或输入 0 返回: " file_choice
+        file_choice="${file_choice//$'\r'/}"
+        file_choice="${file_choice//[[:space:]]/}"
 
-        if [[ "$file_choice" -eq 0 ]]; then
+        if [[ "$file_choice" == "0" ]]; then
             return 0
-        elif [[ "$file_choice" -ge 1 && "$file_choice" -le ${#json_files[@]} ]]; then
+        elif is_valid_list_choice "$file_choice" "${#json_files[@]}"; then
             config_file="${json_files[$((file_choice-1))]}"
         else
             log_error "无效选择"
@@ -2766,8 +3518,8 @@ update_instance_from_file() {
             log_info "步骤 3/3: 启动实例..."
             if start_instance; then
                 log_success "完整更新流程执行成功！"
-                # 发送邮件通知
-                send_email_notification "OCI 实例配置文件更新成功" "实例 ${instance_id} 配置文件更新成功\n配置文件: $config_file\n时间: $(date '+%Y-%m-%d %H:%M:%S')"
+                # 发送通知
+                send_notification "OCI 实例配置文件更新成功" "实例 ${instance_id} 配置文件更新成功\n配置文件: $config_file\n时间: $(date '+%Y-%m-%d %H:%M:%S')"
             else
                 log_warn "启动实例失败，请手动启动"
             fi
@@ -3008,6 +3760,63 @@ read_choice_with_default_label() {
 
     read -p "${prompt} [默认: ${default_value} ${default_label}]: " input_value
     printf -v "$result_var" '%s' "${input_value:-$default_value}"
+}
+
+read_instance_list_choice() {
+    local result_var="$1"
+    local instance_count="$2"
+    local allow_manual="${3:-false}"
+    local input_value
+
+    if [[ "$allow_manual" == "true" ]]; then
+        read -r -p "请输入上方实例列表左侧的序号 [1-${instance_count}]，或按回车手动输入 OCID: " input_value
+    else
+        read -r -p "请输入上方实例列表左侧的序号 [1-${instance_count}]: " input_value
+    fi
+
+    input_value="${input_value//$'\r'/}"
+    input_value="${input_value//[[:space:]]/}"
+    input_value="${input_value#\#}"
+    printf -v "$result_var" '%s' "$input_value"
+}
+
+read_task_list_choice() {
+    local result_var="$1"
+    local task_count="$2"
+    local input_value
+
+    read -r -p "请输入上方任务列表左侧的序号 [1-${task_count}]: " input_value
+    input_value="${input_value//$'\r'/}"
+    input_value="${input_value//[[:space:]]/}"
+    input_value="${input_value#\#}"
+    printf -v "$result_var" '%s' "$input_value"
+}
+
+pause_no_background_tasks() {
+    log_warn "当前没有后台任务，无法执行该操作"
+    echo "提示: 创建实例或更新实例时选择后台重试后，任务会显示在这里。"
+    read -r -p "按回车键返回任务菜单..."
+}
+
+is_valid_list_choice() {
+    local choice="$1"
+    local max_count="$2"
+
+    choice="${choice//$'\r'/}"
+    choice="${choice//[[:space:]]/}"
+    choice="${choice#\#}"
+    max_count="${max_count//$'\r'/}"
+    max_count="${max_count//[[:space:]]/}"
+
+    [[ "$choice" =~ ^[0-9]+$ && "$max_count" =~ ^[0-9]+$ ]] || return 1
+    (( choice >= 1 && choice <= max_count ))
+}
+
+log_invalid_list_choice() {
+    local choice="$1"
+    local max_count="$2"
+
+    log_error "无效选择: '${choice}'，请输入 1-${max_count} 之间的数字"
 }
 
 query_availability_domains() {
@@ -3579,17 +4388,17 @@ load_create_instance_defaults() {
     CREATE_AVAILABILITY_DOMAIN=""
     CREATE_SUBNET_ID=""
     CREATE_IMAGE_ID=""
-    CREATE_IMAGE_OS="Oracle Linux"
-    CREATE_IMAGE_OS_VERSION=""
-    CREATE_SSH_PUBLIC_KEY="$HOME/.ssh/id_rsa.pub"
-    CREATE_SHAPE="VM.Standard.A1.Flex"
-    CREATE_OCPUS="4"
-    CREATE_MEMORY_GB="24"
-    CREATE_BOOT_VOLUME_SIZE="150"
-    CREATE_BOOT_VOLUME_VPUS_PER_GB="10"
+    CREATE_IMAGE_OS="$BEGINNER_CREATE_IMAGE_OS_DEFAULT"
+    CREATE_IMAGE_OS_VERSION="$BEGINNER_CREATE_IMAGE_OS_VERSION_DEFAULT"
+    CREATE_SSH_PUBLIC_KEY="$CREATE_SSH_PUBLIC_KEY_DEFAULT"
+    CREATE_SHAPE="$BEGINNER_CREATE_SHAPE_DEFAULT"
+    CREATE_OCPUS="$BEGINNER_CREATE_OCPUS_DEFAULT"
+    CREATE_MEMORY_GB="$BEGINNER_CREATE_MEMORY_GB_DEFAULT"
+    CREATE_BOOT_VOLUME_SIZE="$BEGINNER_CREATE_BOOT_VOLUME_GB_DEFAULT"
+    CREATE_BOOT_VOLUME_VPUS_PER_GB="$BEGINNER_CREATE_BOOT_VOLUME_VPUS_DEFAULT"
     CREATE_DISPLAY_NAME="oci-instance-$(date +%Y%m%d-%H%M%S)"
     CREATE_ASSIGN_PUBLIC_IP="true"
-    CREATE_RETRY_INTERVAL="30"
+    CREATE_RETRY_INTERVAL="60"
 
     if [[ -f "$config_file" ]] && jq empty "$config_file" 2>/dev/null; then
         CREATE_COMPARTMENT_ID="$(jq -r '.compartmentId // empty' "$config_file")"
@@ -3597,19 +4406,19 @@ load_create_instance_defaults() {
         CREATE_AVAILABILITY_DOMAIN="$(jq -r '.availabilityDomain // empty' "$config_file")"
         CREATE_SUBNET_ID="$(jq -r '.subnetId // empty' "$config_file")"
         CREATE_IMAGE_ID="$(jq -r '.imageId // empty' "$config_file")"
-        CREATE_IMAGE_OS="$(jq -r '.imageOperatingSystem // "Oracle Linux"' "$config_file")"
-        CREATE_IMAGE_OS_VERSION="$(jq -r '.imageOperatingSystemVersion // empty' "$config_file")"
+        CREATE_IMAGE_OS="$(jq -r --arg default_os "$BEGINNER_CREATE_IMAGE_OS_DEFAULT" '.imageOperatingSystem // $default_os' "$config_file")"
+        CREATE_IMAGE_OS_VERSION="$(jq -r --arg default_version "$BEGINNER_CREATE_IMAGE_OS_VERSION_DEFAULT" '.imageOperatingSystemVersion // $default_version' "$config_file")"
         CREATE_SSH_PUBLIC_KEY="$(jq -r '.sshAuthorizedKeysFile // empty' "$config_file")"
-        [[ -z "$CREATE_SSH_PUBLIC_KEY" || "$CREATE_SSH_PUBLIC_KEY" == "null" ]] && CREATE_SSH_PUBLIC_KEY="$HOME/.ssh/id_rsa.pub"
-        CREATE_SHAPE="$(jq -r '.shape // "VM.Standard.A1.Flex"' "$config_file")"
-        CREATE_OCPUS="$(jq -r '.ocpus // 1' "$config_file")"
-        CREATE_MEMORY_GB="$(jq -r '.memoryInGBs // 6' "$config_file")"
-        CREATE_BOOT_VOLUME_SIZE="$(jq -r '.bootVolumeSizeInGBs // 50' "$config_file")"
-        CREATE_BOOT_VOLUME_VPUS_PER_GB="$(jq -r '.bootVolumeVpusPerGB // 10' "$config_file")"
+        [[ -z "$CREATE_SSH_PUBLIC_KEY" || "$CREATE_SSH_PUBLIC_KEY" == "null" ]] && CREATE_SSH_PUBLIC_KEY="$CREATE_SSH_PUBLIC_KEY_DEFAULT"
+        CREATE_SHAPE="$(jq -r --arg default_shape "$BEGINNER_CREATE_SHAPE_DEFAULT" '.shape // $default_shape' "$config_file")"
+        CREATE_OCPUS="$(jq -r --arg default_ocpus "$BEGINNER_CREATE_OCPUS_DEFAULT" '.ocpus // ($default_ocpus | tonumber)' "$config_file")"
+        CREATE_MEMORY_GB="$(jq -r --arg default_memory "$BEGINNER_CREATE_MEMORY_GB_DEFAULT" '.memoryInGBs // ($default_memory | tonumber)' "$config_file")"
+        CREATE_BOOT_VOLUME_SIZE="$(jq -r --arg default_boot "$BEGINNER_CREATE_BOOT_VOLUME_GB_DEFAULT" '.bootVolumeSizeInGBs // ($default_boot | tonumber)' "$config_file")"
+        CREATE_BOOT_VOLUME_VPUS_PER_GB="$(jq -r --arg default_vpus "$BEGINNER_CREATE_BOOT_VOLUME_VPUS_DEFAULT" '.bootVolumeVpusPerGB // ($default_vpus | tonumber)' "$config_file")"
         CREATE_DISPLAY_NAME="$(jq -r '.displayName // empty' "$config_file")"
         [[ -z "$CREATE_DISPLAY_NAME" || "$CREATE_DISPLAY_NAME" == "null" ]] && CREATE_DISPLAY_NAME="oci-instance-$(date +%Y%m%d-%H%M%S)"
         CREATE_ASSIGN_PUBLIC_IP="$(jq -r '.assignPublicIp // true' "$config_file")"
-        CREATE_RETRY_INTERVAL="$(jq -r '.retryInterval // 30' "$config_file")"
+        CREATE_RETRY_INTERVAL="$(jq -r '.retryInterval // 60' "$config_file")"
     fi
 }
 
@@ -3649,7 +4458,7 @@ validate_create_instance_config() {
         log_error "availabilityDomain 不能为空"
         return 1
     fi
-    if [[ -z "$subnet_id" || ! "$subnet_id" =~ ^ocid1\.subnet\.oc1\. ]]; then
+    if [[ -n "$subnet_id" && "$subnet_id" != "null" && ! "$subnet_id" =~ ^ocid1\.subnet\.oc1\. ]]; then
         log_error "subnetId 无效"
         return 1
     fi
@@ -3822,7 +4631,6 @@ save_create_instance_config() {
         '{
             compartmentId: $compartment_id,
             availabilityDomain: $availability_domain,
-            subnetId: $subnet_id,
             imageId: $image_id,
             imageOperatingSystem: $image_os,
             imageOperatingSystemVersion: $image_os_version,
@@ -3835,7 +4643,8 @@ save_create_instance_config() {
             displayName: $display_name,
             assignPublicIp: $assign_public_ip,
             retryInterval: $retry_interval
-        }' > "$config_file"
+        }
+        + (if $subnet_id != "" and $subnet_id != "null" then {subnetId: $subnet_id} else {} end)' > "$config_file"
 }
 
 autosave_create_instance_progress() {
@@ -4060,10 +4869,11 @@ configure_create_instance_params() {
 
     read -p "SSH 公钥文件 [默认: ${CREATE_SSH_PUBLIC_KEY}]: " input_value
     ssh_public_key="${input_value:-$CREATE_SSH_PUBLIC_KEY}"
-    while [[ ! -f "$(expand_path "$ssh_public_key")" ]]; do
-        echo -e "${RED}SSH 公钥文件不存在: $(expand_path "$ssh_public_key")${NC}"
-        read -p "SSH 公钥文件: " ssh_public_key
-    done
+    if ! ensure_create_ssh_public_key "$ssh_public_key"; then
+        pause
+        return 1
+    fi
+    ssh_public_key="$SELECT_RESULT"
     autosave_create_instance_progress "$draft_file" "$compartment_id" "$availability_domain" "$subnet_id" "$image_id" "$image_os" "$image_os_version" "$ssh_public_key" "$shape" "$ocpus" "$memory_gbs" "$CREATE_BOOT_VOLUME_SIZE" "$CREATE_BOOT_VOLUME_VPUS_PER_GB" "$CREATE_DISPLAY_NAME" "$CREATE_ASSIGN_PUBLIC_IP" "$CREATE_RETRY_INTERVAL"
 
     read -p "实例名称 [默认: ${CREATE_DISPLAY_NAME}]: " input_value
@@ -4193,7 +5003,6 @@ launch_instance_from_config() {
         --compartment-id "$compartment_id"
         --availability-domain "$availability_domain"
         --shape "$shape"
-        --subnet-id "$subnet_id"
         --ssh-authorized-keys-file "$ssh_public_key"
         --display-name "$display_name"
         --assign-public-ip "$assign_public_ip"
@@ -4201,6 +5010,9 @@ launch_instance_from_config() {
         --wait-interval-seconds 10
         --output json
     )
+    if [[ -n "$subnet_id" && "$subnet_id" != "null" ]]; then
+        cmd+=(--subnet-id "$subnet_id")
+    fi
 
     local source_details_json
     source_details_json=$(jq -cn \
@@ -4239,7 +5051,7 @@ send_create_success_notification() {
     ocpus=$(jq -r '.ocpus // "N/A"' "$config_file")
     memory_gbs=$(jq -r '.memoryInGBs // "N/A"' "$config_file")
 
-    send_email_notification \
+    send_notification \
         "OCI 实例创建成功" \
         "实例 ${display_name} 创建成功\n实例 OCID: ${instance_id}\n规格: ${shape}\nOCPU: ${ocpus}\n内存: ${memory_gbs} GB\n时间: $(date '+%Y-%m-%d %H:%M:%S')"
 }
@@ -4604,6 +5416,257 @@ create_instance_from_saved_config() {
     pause
 }
 
+select_default_or_first_value() {
+    local default_value="$1"
+    shift
+    local values=("$@")
+    local value
+
+    if [[ -n "$default_value" && "$default_value" != "null" ]]; then
+        for value in "${values[@]}"; do
+            if [[ "$value" == "$default_value" ]]; then
+                printf '%s\n' "$default_value"
+                return 0
+            fi
+        done
+    fi
+
+    [[ ${#values[@]} -gt 0 ]] || return 1
+    printf '%s\n' "${values[0]}"
+}
+
+get_default_availability_domain() {
+    local default_value="$1"
+    local values=()
+    local ad_name
+
+    while IFS= read -r ad_name; do
+        [[ -n "$ad_name" ]] && values+=("$ad_name")
+    done < <(oci iam availability-domain list --all --output json 2>/dev/null | jq -r '.data[].name // empty')
+
+    select_default_or_first_value "$default_value" "${values[@]}"
+}
+
+get_default_subnet_id() {
+    local compartment_id="$1"
+    local default_value="$2"
+    local values=()
+    local subnet_id
+
+    while IFS= read -r subnet_id; do
+        [[ -n "$subnet_id" ]] && values+=("$subnet_id")
+    done < <(oci network subnet list \
+        --compartment-id "$compartment_id" \
+        --all \
+        --output json 2>/dev/null | jq -r '.data[].id // empty')
+
+    select_default_or_first_value "$default_value" "${values[@]}"
+}
+
+get_default_image_id() {
+    local compartment_id="$1"
+    local operating_system="$2"
+    local operating_system_version="$3"
+    local shape="$4"
+    local default_value="$5"
+    local values=()
+    local image_id
+    local cmd=(
+        oci compute image list
+        --compartment-id "$compartment_id"
+        --operating-system "$operating_system"
+        --sort-by TIMECREATED
+        --sort-order DESC
+        --all
+        --output json
+    )
+
+    if [[ -n "$operating_system_version" ]]; then
+        cmd+=(--operating-system-version "$operating_system_version")
+    fi
+
+    if [[ -n "$shape" ]]; then
+        while IFS= read -r image_id; do
+            [[ -n "$image_id" ]] && values+=("$image_id")
+        done < <("${cmd[@]}" --shape "$shape" 2>/dev/null | jq -r '.data[].id // empty' | head -20)
+    fi
+
+    if [[ ${#values[@]} -eq 0 ]]; then
+        while IFS= read -r image_id; do
+            [[ -n "$image_id" ]] && values+=("$image_id")
+        done < <("${cmd[@]}" 2>/dev/null | jq -r '.data[].id // empty' | head -20)
+    fi
+
+    select_default_or_first_value "$default_value" "${values[@]}"
+}
+
+prepare_beginner_create_config() {
+    local config_file="$1"
+    local source_config="$2"
+
+    load_create_instance_defaults "$source_config"
+
+    local compartment_id availability_domain subnet_id image_os image_os_version shape ocpus memory_gbs
+    local boot_volume_size boot_volume_vpus_per_gb ssh_public_key display_name assign_public_ip retry_interval image_id
+
+    compartment_id="$CREATE_COMPARTMENT_ID"
+    image_os="$CREATE_IMAGE_OS"
+    image_os_version="$CREATE_IMAGE_OS_VERSION"
+    [[ -z "$image_os" || "$image_os" == "null" ]] && image_os="$BEGINNER_CREATE_IMAGE_OS_DEFAULT"
+    [[ -z "$image_os_version" || "$image_os_version" == "null" ]] && image_os_version="$BEGINNER_CREATE_IMAGE_OS_VERSION_DEFAULT"
+    shape="$CREATE_SHAPE"
+    [[ -z "$shape" || "$shape" == "null" ]] && shape="$BEGINNER_CREATE_SHAPE_DEFAULT"
+    ocpus="$CREATE_OCPUS"
+    memory_gbs="$CREATE_MEMORY_GB"
+    boot_volume_size="$CREATE_BOOT_VOLUME_SIZE"
+    if [[ "$boot_volume_size" == "150" ]]; then
+        log_info "检测到旧的一键创建默认启动盘 150 GB，已自动改为 ${BEGINNER_CREATE_BOOT_VOLUME_GB_DEFAULT} GB"
+        boot_volume_size="$BEGINNER_CREATE_BOOT_VOLUME_GB_DEFAULT"
+    fi
+    boot_volume_vpus_per_gb="$CREATE_BOOT_VOLUME_VPUS_PER_GB"
+    ssh_public_key="$CREATE_SSH_PUBLIC_KEY"
+    display_name="$CREATE_DISPLAY_NAME"
+    assign_public_ip="$CREATE_ASSIGN_PUBLIC_IP"
+    retry_interval="$CREATE_RETRY_INTERVAL"
+
+    if [[ -z "$compartment_id" || "$compartment_id" == "null" ]]; then
+        log_error "未找到默认区间 OCID，请先初始化 OCI 配置或执行“获取关键参数并保存”"
+        return 1
+    fi
+
+    log_info "正在按“获取关键参数并保存”的方式查询默认可用性域..."
+    availability_domain="$(get_default_availability_domain "$CREATE_AVAILABILITY_DOMAIN")"
+    if [[ -z "$availability_domain" || "$availability_domain" == "null" ]]; then
+        log_error "未查询到可用性域，请手动确认区间权限或先执行“获取关键参数并保存”"
+        return 1
+    fi
+
+    log_info "正在按“获取关键参数并保存”的方式查询默认子网..."
+    subnet_id="$(get_default_subnet_id "$compartment_id" "$CREATE_SUBNET_ID")"
+    if [[ -z "$subnet_id" || "$subnet_id" == "null" ]]; then
+        log_warn "未查询到可用子网"
+        read -p "是否现在创建一个子网? [Y/n]: " -r
+        [[ -z "$REPLY" ]] && REPLY="y"
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            if create_subnet_interactive "$compartment_id" "$availability_domain"; then
+                subnet_id="$SELECT_RESULT"
+            else
+                log_warn "未创建子网，将跳过 subnetId 参数继续生成一键配置"
+                subnet_id=""
+            fi
+        else
+            log_warn "已跳过创建子网，将不设置 subnetId 参数"
+            subnet_id=""
+        fi
+    fi
+    if ! ensure_create_ssh_public_key "$ssh_public_key"; then
+        return 1
+    fi
+    ssh_public_key="$SELECT_RESULT"
+    display_name="$(create_timestamped_display_name "$display_name")"
+
+    log_info "正在按“获取关键参数并保存”的方式查询镜像: ${image_os} ${image_os_version}"
+    image_id="$(get_default_image_id "$compartment_id" "$image_os" "$image_os_version" "$shape" "$CREATE_IMAGE_ID")"
+    if [[ -z "$image_id" || "$image_id" == "null" ]]; then
+        log_error "未找到可用镜像: ${image_os} ${image_os_version}"
+        return 1
+    fi
+
+    save_create_instance_config \
+        "$config_file" \
+        "$compartment_id" \
+        "$availability_domain" \
+        "$subnet_id" \
+        "$image_id" \
+        "$image_os" \
+        "$image_os_version" \
+        "$ssh_public_key" \
+        "$shape" \
+        "$ocpus" \
+        "$memory_gbs" \
+        "$boot_volume_size" \
+        "$boot_volume_vpus_per_gb" \
+        "$display_name" \
+        "$assign_public_ip" \
+        "$retry_interval"
+}
+
+beginner_create_instance() {
+    local source_config="$CREATE_INSTANCE_CONFIG"
+    local quick_config="${DATA_DIR}/create_instance_beginner.json"
+
+    show_header
+    echo -e "${BOLD}[5] 创建实例 - 一键创建实例${NC}"
+    echo "========================================"
+    echo ""
+
+    if ! check_oci_cli; then
+        pause
+        return 1
+    fi
+
+    if ! check_oci_config; then
+        pause
+        return 1
+    fi
+
+    if [[ ! -f "$source_config" && -f "$CREATE_INSTANCE_DRAFT_CONFIG" ]]; then
+        source_config="$CREATE_INSTANCE_DRAFT_CONFIG"
+    fi
+
+    if ! prepare_beginner_create_config "$quick_config" "$source_config"; then
+        echo ""
+        echo "提示: 一键创建实例会复用区间默认值，并查询可用性域、子网和镜像 ID。"
+        echo "      查询结果中如包含已保存值则继续使用已保存值，否则使用第一个查询结果。"
+        echo "      如查询不到，请先确认 OCI 权限，或选择“获取关键参数并保存”手动处理。"
+        pause
+        return 1
+    fi
+
+    show_create_instance_config_summary "$quick_config"
+    echo "执行方式:"
+    echo "  1) 前台执行一次"
+    echo "  2) 后台持续重试"
+    echo "  0) 返回"
+    echo ""
+    read -p "请选择执行方式 [默认: 2]: " -r
+    local create_mode="${REPLY:-2}"
+
+    case "$create_mode" in
+        1)
+            local result exit_code instance_id
+            log_info "开始一键创建实例..."
+            result=$(launch_instance_from_config "$quick_config" 2>&1)
+            exit_code=$?
+            if [[ $exit_code -eq 0 ]]; then
+                instance_id=$(echo "$result" | jq -r '.data.id // empty' 2>/dev/null)
+                log_success "实例创建成功"
+                [[ -n "$instance_id" ]] && echo "实例 OCID: $instance_id"
+                [[ -n "$instance_id" ]] && show_created_instance_summary "$instance_id"
+                send_create_success_notification "$quick_config" "$instance_id"
+            else
+                log_error "实例创建失败"
+                echo "$result"
+                echo ""
+                read -p "是否创建后台任务自动重试? [Y/n]: " -r
+                [[ -z "$REPLY" ]] && REPLY="y"
+                [[ $REPLY =~ ^[Yy]$ ]] && create_instance_background_task "$quick_config" "$(jq -r '.retryInterval // 60' "$quick_config")"
+            fi
+            ;;
+        2)
+            create_instance_background_task "$quick_config" "$(jq -r '.retryInterval // 60' "$quick_config")"
+            ;;
+        0)
+            return 0
+            ;;
+        *)
+            log_error "无效选项"
+            ;;
+    esac
+
+    pause
+}
+
 manage_create_instance() {
     while true; do
         show_header
@@ -4625,18 +5688,20 @@ manage_create_instance() {
         fi
         echo ""
         echo "操作选项:"
-        echo "  1) 获取关键参数并保存"
-        echo "  2) 查看已保存配置"
-        echo "  3) 使用已保存配置创建实例"
+        echo "  1) 一键创建实例"
+        echo "  2) 获取关键参数并保存"
+        echo "  3) 查看已保存配置"
+        echo "  4) 使用已保存配置创建实例"
         echo "  0) 返回主菜单"
         echo ""
 
         read -p "请选择操作: " -r
 
         case $REPLY in
-            1) configure_create_instance_params ;;
-            2) show_saved_create_instance_config ;;
-            3) create_instance_from_saved_config ;;
+            1) beginner_create_instance ;;
+            2) configure_create_instance_params ;;
+            3) show_saved_create_instance_config ;;
+            4) create_instance_from_saved_config ;;
             0) return 0 ;;
             *)
                 log_error "无效选项"
@@ -4737,7 +5802,7 @@ manage_instances() {
                 esac
 
                 # 显示实例卡片（完整 OCID）
-                echo -e "#${idx} ${name}"
+                echo -e "序号 #${idx}  ${name}"
                 echo -e "  状态:  ${state_color}${state}${NC}"
                 echo -e "  配置:  ${ocpus} OCPU / ${memory} GB"
                 echo -e "  形状:  ${shape}"
@@ -4747,16 +5812,18 @@ manage_instances() {
         done < <(echo "$instances_json" | jq -r '.data[].id')
 
         echo -e "${BOLD}========================================${NC}"
+        echo -e "${CYAN}后续操作请输入实例名前面的序号，例如看到“序号 #1”就输入 1。${NC}"
         echo ""
 
         # 内层循环：操作选项（不重新获取数据）
         while true; do
             echo "操作选项:"
-            echo "  1) 查看实例完整配置    (JSON格式)"
-            echo "  2) 输入配置参数更新    (交互式输入)"
-            echo "  3) 使用配置文件更新    (JSON文件)"
-            echo "  4) 停止实例"
-            echo "  5) 启动实例"
+            echo "  1) 一键修改实例配置 (4 OCPU / 24 GB / 200 GB 启动盘)"
+            echo "  2) 查看实例完整配置    (JSON格式)"
+            echo "  3) 输入配置参数更新    (交互式输入)"
+            echo "  4) 使用配置文件更新    (JSON文件)"
+            echo "  5) 停止实例"
+            echo "  6) 启动实例"
             echo "  0) 返回主菜单"
             echo ""
 
@@ -4764,9 +5831,12 @@ manage_instances() {
 
             case $REPLY in
                 1)
+                    beginner_update_instance "$instance_count"
+                    ;;
+                2)
                     # 查看完整配置 (JSON)
-                    read -p "选择实例序号 (1-$instance_count): " choice
-                    if [[ "$choice" -ge 1 && "$choice" -le "$instance_count" ]]; then
+                    read_instance_list_choice choice "$instance_count"
+                    if is_valid_list_choice "$choice" "$instance_count"; then
                         local selected_ocid="${INSTANCE_OCIDS[$choice]}"
 
                         log_info "获取实例配置..."
@@ -4798,37 +5868,37 @@ manage_instances() {
                             log_error "获取实例配置失败"
                         fi
                     else
-                        log_error "无效选择"
+                        log_invalid_list_choice "$choice" "$instance_count"
                     fi
                     ;;
-                2)
+                3)
                     # 输入配置参数更新 - 子菜单
                     update_by_input_params "$instance_count"
                     ;;
-                3)
+                4)
                     # 使用配置文件更新 - 子菜单
                     update_by_config_file "$instance_count"
                     ;;
-                4)
+                5)
                     # 停止实例
-                    read -p "选择实例序号 (1-$instance_count): " choice
-                    if [[ "$choice" -ge 1 && "$choice" -le "$instance_count" ]]; then
+                    read_instance_list_choice choice "$instance_count"
+                    if is_valid_list_choice "$choice" "$instance_count"; then
                         local selected_ocid="${INSTANCE_OCIDS[$choice]}"
                         INSTANCE_OCID="$selected_ocid"
                         stop_instance
                     else
-                        log_error "无效选择"
+                        log_invalid_list_choice "$choice" "$instance_count"
                     fi
                     ;;
-                5)
+                6)
                     # 启动实例
-                    read -p "选择实例序号 (1-$instance_count): " choice
-                    if [[ "$choice" -ge 1 && "$choice" -le "$instance_count" ]]; then
+                    read_instance_list_choice choice "$instance_count"
+                    if is_valid_list_choice "$choice" "$instance_count"; then
                         local selected_ocid="${INSTANCE_OCIDS[$choice]}"
                         INSTANCE_OCID="$selected_ocid"
                         start_instance
                     else
-                        log_error "无效选择"
+                        log_invalid_list_choice "$choice" "$instance_count"
                     fi
                     ;;
                 0)
@@ -4865,22 +5935,22 @@ update_by_input_params() {
         case $REPLY in
             1)
                 # 直接更新
-                read -p "选择实例序号 (1-$instance_count): " choice
-                if [[ "$choice" -ge 1 && "$choice" -le "$instance_count" ]]; then
+                read_instance_list_choice choice "$instance_count"
+                if is_valid_list_choice "$choice" "$instance_count"; then
                     INSTANCE_OCID="${INSTANCE_OCIDS[$choice]}"
                     update_instance_config_direct
                 else
-                    log_error "无效选择"
+                    log_invalid_list_choice "$choice" "$instance_count"
                 fi
                 ;;
             2)
                 # 完整更新流程
-                read -p "选择实例序号 (1-$instance_count): " choice
-                if [[ "$choice" -ge 1 && "$choice" -le "$instance_count" ]]; then
+                read_instance_list_choice choice "$instance_count"
+                if is_valid_list_choice "$choice" "$instance_count"; then
                     INSTANCE_OCID="${INSTANCE_OCIDS[$choice]}"
                     update_instance_config_full
                 else
-                    log_error "无效选择"
+                    log_invalid_list_choice "$choice" "$instance_count"
                 fi
                 ;;
             0)
@@ -4917,9 +5987,9 @@ update_by_config_file() {
         case $REPLY in
             1)
                 # 生成配置模板
-                read -p "选择实例序号 (1-$instance_count，或回车手动输入): " choice
+                read_instance_list_choice choice "$instance_count" "true"
                 local selected_ocid=""
-                if [[ -n "$choice" && "$choice" -ge 1 && "$choice" -le "$instance_count" ]]; then
+                if is_valid_list_choice "$choice" "$instance_count"; then
                     selected_ocid="${INSTANCE_OCIDS[$choice]}"
                 fi
                 generate_update_template "$selected_ocid"
@@ -4971,56 +6041,56 @@ manage_background_tasks() {
         case $REPLY in
             1)
                 if [[ $task_count -eq 0 ]]; then
-                    log_warn "暂无任务"
+                    pause_no_background_tasks
                     continue
                 fi
-                read -p "选择任务序号 (1-$task_count): " task_num
-                if [[ "$task_num" -ge 1 && "$task_num" -le "$task_count" ]]; then
+                read_task_list_choice task_num "$task_count"
+                if is_valid_list_choice "$task_num" "$task_count"; then
                     local task_id="${TASK_IDS[$task_num]}"
                     view_task_detail "$task_id"
                 else
-                    log_error "无效选择"
+                    log_invalid_list_choice "$task_num" "$task_count"
                 fi
                 ;;
             2)
                 if [[ $task_count -eq 0 ]]; then
-                    log_warn "暂无任务"
+                    pause_no_background_tasks
                     continue
                 fi
-                read -p "选择任务序号 (1-$task_count): " task_num
-                if [[ "$task_num" -ge 1 && "$task_num" -le "$task_count" ]]; then
+                read_task_list_choice task_num "$task_count"
+                if is_valid_list_choice "$task_num" "$task_count"; then
                     local task_id="${TASK_IDS[$task_num]}"
                     stop_task "$task_id"
                 else
-                    log_error "无效选择"
+                    log_invalid_list_choice "$task_num" "$task_count"
                 fi
                 read -p "按回车键继续..." -r
                 ;;
             3)
                 if [[ $task_count -eq 0 ]]; then
-                    log_warn "暂无任务"
+                    pause_no_background_tasks
                     continue
                 fi
-                read -p "选择任务序号 (1-$task_count): " task_num
-                if [[ "$task_num" -ge 1 && "$task_num" -le "$task_count" ]]; then
+                read_task_list_choice task_num "$task_count"
+                if is_valid_list_choice "$task_num" "$task_count"; then
                     local task_id="${TASK_IDS[$task_num]}"
                     resume_task "$task_id"
                 else
-                    log_error "无效选择"
+                    log_invalid_list_choice "$task_num" "$task_count"
                 fi
                 read -p "按回车键继续..." -r
                 ;;
             4)
                 if [[ $task_count -eq 0 ]]; then
-                    log_warn "暂无任务"
+                    pause_no_background_tasks
                     continue
                 fi
-                read -p "选择任务序号 (1-$task_count): " task_num
-                if [[ "$task_num" -ge 1 && "$task_num" -le "$task_count" ]]; then
+                read_task_list_choice task_num "$task_count"
+                if is_valid_list_choice "$task_num" "$task_count"; then
                     local task_id="${TASK_IDS[$task_num]}"
                     delete_task "$task_id"
                 else
-                    log_error "无效选择"
+                    log_invalid_list_choice "$task_num" "$task_count"
                 fi
                 read -p "按回车键继续..." -r
                 ;;
@@ -5054,7 +6124,7 @@ show_help() {
     echo "      检查 OCI CLI、jq、配置文件和连接状态"
     echo ""
     echo "  [2] 初始化 OCI 配置"
-    echo "      配置 OCI CLI (~/.oci/config)"
+    echo "      配置 OCI CLI (${OCI_CONFIG_FILE})"
     echo "      需要提供: 用户 OCID、指纹、租户 OCID、区域、私钥路径"
     echo ""
     echo "  [3] 查看 OCI 配置"
@@ -5079,10 +6149,10 @@ show_help() {
     echo "        - 停止/恢复/删除任务"
     echo "        - 实时查看日志"
     echo ""
-    echo "  [7] 配置邮件通知"
-    echo "      配置 SMTP 服务器信息"
-    echo "      更新/创建成功后自动发送邮件通知"
-    echo "      支持测试邮件发送"
+    echo "  [7] 配置通知"
+    echo "      配置邮件或 Telegram 机器人通知"
+    echo "      更新/创建成功后按所选方式自动发送通知"
+    echo "      支持测试通知发送"
     echo ""
     echo "  [8] 卸载脚本"
     echo "      交互式卸载辅助依赖、OCI 配置、日志和脚本数据"
@@ -5103,11 +6173,11 @@ show_help() {
     echo "    - 使用已保存配置前台执行或后台重试"
     echo ""
     echo -e "${BOLD}配置文件位置:${NC}"
-    echo "   OCI CLI 配置: ~/.oci/config"
-    echo "   私钥文件:     ~/.oci/oci_api_key.pem"
+    echo "   OCI CLI 配置: $OCI_CONFIG_FILE"
+    echo "   私钥文件:     $OCI_KEY_FILE_DEFAULT"
     echo "   数据目录:     $DATA_DIR"
     echo "   创建配置:     $CREATE_INSTANCE_CONFIG"
-    echo "   邮件配置:     $EMAIL_CONFIG_FILE"
+    echo "   通知配置:     $EMAIL_CONFIG_FILE"
     echo "   任务目录:     $TASK_DIR/"
     echo ""
     echo -e "${BOLD}如何获取 OCI 配置信息:${NC}"
@@ -5139,11 +6209,13 @@ show_menu() {
         echo -e "${YELLOW}!${NC} 尚未配置，请先执行 [2] 初始化 OCI 配置"
     fi
 
-    # 显示邮件配置状态
-    if [[ -f "$EMAIL_CONFIG_FILE" && -n "$SMTP_HOST" ]]; then
-        echo -e "${GREEN}✓${NC} 邮件配置已加载: ${SMTP_USER} -> ${EMAIL_TO}"
+    # 显示通知配置状态
+    if [[ "${NOTIFY_METHOD:-email}" == "none" ]]; then
+        echo -e "${YELLOW}!${NC} 通知已关闭"
+    elif [[ -f "$EMAIL_CONFIG_FILE" ]]; then
+        echo -e "${GREEN}✓${NC} 通知配置已加载: ${NOTIFY_METHOD:-email}"
     else
-        echo -e "${YELLOW}!${NC} 邮件通知未配置"
+        echo -e "${YELLOW}!${NC} 通知未配置"
     fi
 
     if [[ -f "$CREATE_INSTANCE_CONFIG" ]]; then
@@ -5169,7 +6241,7 @@ show_menu() {
     echo "  4) 管理实例"
     echo "  5) 创建实例"
     echo "  6) 管理后台任务"
-    echo "  7) 配置邮件通知"
+    echo "  7) 配置通知"
     echo "  8) 卸载脚本"
     echo "  h) 帮助信息"
     echo ""
@@ -5194,7 +6266,7 @@ main() {
             4) manage_instances ;;
             5) manage_create_instance ;;
             6) manage_background_tasks ;;
-            7) configure_email && test_email_config ;;
+            7) configure_notifications && test_notification_config ;;
             8) uninstall_script ;;
             h|H) show_help ;;
             0)
@@ -5217,8 +6289,9 @@ trap 'echo -e "\n${YELLOW}操作已取消${NC}"; exit 0' INT TERM
 # ================================
 # 启动主程序
 # ================================
-# 加载邮件配置
+# 加载通知配置
 init_data_dir
+configure_oci_cli_runtime_env
 load_email_config
 
 # 启动主菜单

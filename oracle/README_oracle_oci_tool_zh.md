@@ -5,9 +5,14 @@
 ## 功能特性
 
 - **OCI 环境检查**：验证 OCI CLI、jq、配置文件和连接状态
-  - 缺失常见依赖时可直接在脚本内询问并安装
+  - 缺失常见依赖时会自动尝试安装
 - **实例管理**：列出、查看、启动、停止实例
+- **一键修改实例配置**：默认将实例改为 4 OCPU / 24 GB 内存，并尝试将启动盘扩容到 200 GB
 - **实例创建**：保存关键参数并复用已保存配置创建新实例
+  - 一键创建实例默认使用 Ubuntu 24.04、A1.Flex、4 OCPU、24 GB、200 GB 启动盘、120 VPU/GB
+  - 一键创建实例会复用区间默认值，并按“获取关键参数并保存”的查询方式获取可用性域、子网和镜像 ID
+  - 如查询不到可用性域、子网或镜像 ID，会停止并提示人工处理
+  - 如未找到 SSH 公钥，会自动在数据目录生成实例登录密钥对
   - 设置过程中自动保存到草稿，意外退出后可继续
   - 只有确认完成后才会覆盖正式配置
   - 新建 VCN 时提供默认推荐配置，支持快速创建公网 VCN
@@ -22,17 +27,19 @@
   - 直接更新（不停止实例）
   - 完整更新流程（停止→更新→启动）
 - **后台任务**：创建和管理后台任务，支持自动重试
-- **邮件通知**：更新/创建成功后发送邮件通知（SMTP）
+- **通知**：更新/创建成功后支持邮件（SMTP）或 Telegram 机器人通知
 - **配置文件支持**：使用 JSON 配置文件批量更新
 - **任务恢复**：恢复已停止的任务，保留执行次数
-- **卸载功能**：支持交互式卸载辅助依赖、OCI 配置、日志和脚本数据
+- **卸载功能**：支持交互式卸载 OCI 配置、日志、脚本数据，并自动清理脚本安装过的依赖
 
 ## 系统要求
 
 - Bash 3.x+（兼容 macOS）
 - [OCI CLI](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/cliconcepts.htm)
 - [jq](https://stedolan.github.io/jq/)
-- curl（用于邮件通知）
+- curl（用于通知和自动安装）
+- Python 3 和 venv（用于安装 OCI CLI）
+- ssh-keygen（用于自动生成实例登录密钥）
 - `column`（可选，用于表格对齐显示；未安装时脚本会自动降级为普通文本显示）
 
 ## 依赖安装
@@ -41,25 +48,33 @@
 
 ```bash
 sudo apt update
-sudo apt install -y bash curl jq bsdextrautils
+sudo apt install -y bash curl jq python3 python3-venv openssh-client bsdextrautils
 ```
 
 说明：
+- `python3-venv` 用于 OCI CLI 官方安装器
+- `openssh-client` 提供 `ssh-keygen`
 - `bsdextrautils` 提供 `column`
-- `OCI CLI` 需要按 Oracle 官方文档单独安装
-- 脚本的“检查 OCI 环境”菜单也支持在缺失依赖时直接询问并安装
+- `OCI CLI` 可通过脚本的“检查 OCI 环境”菜单自动安装最新版本
+- 脚本的“检查 OCI 环境”菜单也支持在缺失依赖时自动尝试安装
 
 ### macOS
 
 ```bash
-brew install jq
+brew install jq openssh
 ```
 
 说明：
 - macOS 自带 `bash` 和 `curl`
 - `column` 通常系统自带
-- `OCI CLI` 需要按 Oracle 官方文档单独安装
-- 脚本的“检查 OCI 环境”菜单也支持在缺失依赖时直接询问并安装
+- `openssh` 提供新版 `ssh-keygen`
+- `OCI CLI` 可通过脚本的“检查 OCI 环境”菜单自动安装最新版本
+- 脚本的“检查 OCI 环境”菜单也支持在缺失依赖时自动尝试安装
+
+脚本自动安装系统依赖时，会优先使用当前系统可用的包管理器：
+`apt-get`、`dnf`、`yum`、`pacman`、`zypper`、`apk` 或 `brew`。
+脚本会自动尝试安装缺失的 `jq`、`curl`、Python 3/venv、`ssh-keygen`、`column` 对应包和 OCI CLI。
+脚本会记录自己安装过的系统包，卸载脚本时会自动清理这些记录中的依赖；用户原本已安装的依赖不会被记录，也不会被自动卸载。
 
 ## 快速开始
 
@@ -71,7 +86,7 @@ brew install jq
 bash <(curl -sL https://raw.githubusercontent.com/yhj945/tools/main/oracle/oracle_oci_tool.sh)
 ```
 
-无论使用哪种方式，脚本数据默认都会保存在 `~/.oracle_oci_tool`，避免因切换启动方式而丢失任务、邮件配置或创建配置。
+无论使用哪种方式，脚本数据默认都会保存在 `~/.oracle_oci_tool`，避免因切换启动方式而丢失任务、通知配置或创建配置。
 
 ## 主菜单
 
@@ -83,7 +98,7 @@ bash <(curl -sL https://raw.githubusercontent.com/yhj945/tools/main/oracle/oracl
 | 4 | 管理实例 |
 | 5 | 创建实例 |
 | 6 | 管理后台任务 |
-| 7 | 配置邮件通知 |
+| 7 | 配置通知 |
 | 8 | 卸载脚本 |
 | h | 帮助信息 |
 | 0 | 退出 |
@@ -98,16 +113,14 @@ bash <(curl -sL https://raw.githubusercontent.com/yhj945/tools/main/oracle/oracl
    - 用户 OCID
    - 指纹
    - 租户 OCID
-4. 下载或创建私钥文件（如 `~/.oci/oci_api_key.pem`）
+4. 下载或创建私钥文件（默认放在 `~/.oracle_oci_tool/oci/oci_api_key.pem`）
 
-### 邮件通知（可选）
+### 通知（可选）
 
-通过菜单选项 `[7] 配置邮件通知` 配置：
-- SMTP 服务器（如 `smtp.qq.com`）
-- SMTP 端口（SSL 通常为 `465`）
-- 发件人邮箱
-- SMTP 密码/授权码
-- 收件人邮箱
+通过菜单选项 `[7] 配置通知` 配置通知方式：
+- 邮件：脚本内置 QQ 邮箱 `smtp.qq.com:465` 和 163 邮箱 `smtp.163.com:465` 默认值；密码一般填写邮箱授权码，不是登录密码
+- Telegram：在 Telegram 搜索 `@BotFather`，发送 `/newbot` 创建机器人，复制返回的 Token 作为 TG Bot ID/Token；先给机器人发送任意消息后，脚本会尝试自动获取 Chat ID
+- 也可以选择邮件 + Telegram，或关闭通知
 
 ## 数据目录
 
@@ -115,16 +128,30 @@ bash <(curl -sL https://raw.githubusercontent.com/yhj945/tools/main/oracle/oracl
 
 ```text
 ~/.oracle_oci_tool/
-├── email_config.conf
+├── bin/
+│   └── oci
+├── oracle-cli/
+│   └── installations/
+├── oci/
+│   ├── config
+│   └── oci_api_key.pem
+├── ssh/
+│   ├── oci_instance_key
+│   └── oci_instance_key.pub
+├── notification_config.conf
 ├── tasks/
 ├── update_instance_config.json
 ├── create_instance_config.json
+├── create_instance_beginner.json
 └── create_instance_config.draft.json
 ```
 
 说明：
 - 本地执行 `./oracle_oci_tool.sh` 和远程执行 `bash <(curl ...)` 使用同一个数据目录
 - 首次运行新版脚本时，如旧数据仍在脚本目录中，会自动迁移常见配置和任务到 `~/.oracle_oci_tool`
+- 首次运行新版脚本时，如检测到旧 `~/.oci/config` 且数据目录中尚无 OCI 配置，会自动复制到 `~/.oracle_oci_tool/oci/config`
+- 首次运行新版脚本时，如检测到旧 `email_config.conf`，会自动迁移为 `notification_config.conf`
+- 脚本运行时通过临时环境变量 `OCI_CLI_CONFIG_FILE` 使用数据目录中的 OCI 配置，不需要写入 shell rc 文件
 - 如需自定义目录，可在运行前设置环境变量 `OCI_TOOL_HOME`
 - 通过“卸载脚本”功能时，可选择是否删除此数据目录
 
@@ -146,13 +173,15 @@ bash <(curl -sL https://raw.githubusercontent.com/yhj945/tools/main/oracle/oracl
 ## 卸载说明
 
 - 主菜单提供 `[8] 卸载脚本`
-- 可交互式选择是否停止后台任务、删除数据目录、删除 `~/.oci/config`、删除私钥、删除 `~/.oci`
+- 可交互式选择是否停止后台任务、删除数据目录、删除 OCI 配置、删除私钥、清理旧 `~/.oci`
 - 会尽力删除常见 OCI CLI 安装文件
-- 可选卸载辅助依赖（如 `jq`、`bsdextrautils`）
-- `curl` 这类系统关键组件不会默认直接卸载，需单独确认
+- 会自动卸载脚本记录过的系统依赖（如 `jq`、`curl`、Python 3/venv、`column` 对应包）
 
 ## 创建实例参数说明
 
+- 一键创建实例会复用区间默认值，并查询可用性域、子网和镜像 ID；查询结果中如包含已保存值则继续使用已保存值，否则使用第一个查询结果
+- 如果查询不到子网，一键创建实例会询问是否创建子网；子网创建流程默认创建公有子网，也可取消并跳过设置 `subnetId`
+- 如果查询不到其他必要资源，一键创建实例会停止并提示先人工处理；如缺少 SSH 公钥，会在数据目录自动生成密钥对
 - `create_instance_config.draft.json` 用于保存设置过程中的草稿进度
 - `create_instance_config.json` 仅在最终确认后才会覆盖
 - 引导卷大小与性能通过 OCI CLI 支持的实例创建参数写入，适用于前台创建和后台重试创建
@@ -172,9 +201,9 @@ bash <(curl -sL https://raw.githubusercontent.com/yhj945/tools/main/oracle/oracl
 
 ### 安全提示
 
-- 邮件配置文件（`email_config.conf`）包含敏感的 SMTP 凭证
+- 通知配置文件（`notification_config.conf`）可能包含 SMTP 凭证和 Telegram Bot ID/Token
 - 所有敏感文件已自动添加到 `.gitignore`
-- **切勿将** `email_config.conf` 或 `tasks/` 目录提交到版本控制系统
+- **切勿将** `notification_config.conf`、旧版 `email_config.conf` 或 `tasks/` 目录提交到版本控制系统
 
 ## 开源协议
 

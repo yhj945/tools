@@ -25,6 +25,8 @@ logs/
 .env
 .env.*
 !.env.example
+email_config.conf
+notification_config.conf
 *.pem
 *.key
 
@@ -48,3 +50,5 @@ node_modules/
 
 # Go
 vendor/
+
+temp/
