@@ -2243,6 +2243,88 @@ check_oci_config() {
     return 0
 }
 
+print_oci_error_detail() {
+    local error_output="$1"
+
+    error_output="$(printf '%s\n' "$error_output" | sed '/^[[:space:]]*$/d' | head -n 20)"
+    if [[ -n "$error_output" ]]; then
+        echo ""
+        echo -e "${YELLOW}OCI CLI 错误详情:${NC}"
+        echo "----------------------------------------"
+        printf '%s\n' "$error_output"
+        echo "----------------------------------------"
+    fi
+}
+
+print_oci_error_suggestions() {
+    local error_output="$1"
+
+    [[ -n "$error_output" ]] || return 0
+
+    echo ""
+    echo -e "${YELLOW}错误解释和建议:${NC}"
+    echo "----------------------------------------"
+
+    if [[ "$error_output" == *"Permissions on"* && "$error_output" == *"too open"* ]]; then
+        echo "  - 私钥文件权限过宽，OCI CLI 不建议使用当前权限。"
+        echo "    建议执行:"
+        echo "      chmod 600 ${OCI_KEY_FILE_DEFAULT}"
+        echo "    或使用 OCI CLI 提示的 repair-file-permissions 命令修复。"
+    fi
+
+    if [[ "$error_output" == *"NotAuthenticated"* || "$error_output" == *'"status": 401'* ]]; then
+        echo "  - OCI 返回 NotAuthenticated/401，表示认证信息没有通过。"
+        echo "    常见原因:"
+        echo "      1) config 中 fingerprint 和 OCI 控制台 API Key 指纹不一致"
+        echo "      2) key_file 指向的私钥和控制台上传的公钥不是一对"
+        echo "      3) user OCID 或 tenancy OCID 填错"
+        echo "      4) API 公钥没有上传到该 user 的 API Keys"
+        echo "      5) 私钥文件内容损坏，或复制时多了空格/换行"
+        echo "    建议处理:"
+        echo "      1) 进入 OCI 控制台 -> 用户设置 -> API 密钥"
+        echo "      2) 核对脚本配置里的 user、tenancy、fingerprint"
+        echo "      3) 确认 ${OCI_KEY_FILE_DEFAULT} 是对应 API 公钥的私钥"
+        echo "      4) 如果不确定，建议重新生成 API Key 并重新执行 [2] 初始化 OCI 配置"
+    fi
+
+    if [[ "$error_output" == *"InvalidConfig"* || "$error_output" == *"ConfigFileNotFound"* ]]; then
+        echo "  - OCI CLI 配置文件无效或未找到。"
+        echo "    建议重新执行 [2] 初始化 OCI 配置。"
+    fi
+
+    if [[ "$error_output" == *"Could not find private key"* || "$error_output" == *"No such file"* ]]; then
+        echo "  - 私钥文件不存在或路径错误。"
+        echo "    请检查 config 中 key_file 是否指向真实存在的私钥文件。"
+    fi
+
+    if [[ "$error_output" == *"ConnectionError"* || "$error_output" == *"NameResolutionError"* || "$error_output" == *"Failed to establish"* ]]; then
+        echo "  - 网络连接失败，可能是 DNS、代理、防火墙或网络不可达。"
+        echo "    请确认服务器可以访问 OCI API endpoint。"
+    fi
+
+    echo "----------------------------------------"
+}
+
+test_oci_connection() {
+    local namespace_output exit_code namespace
+
+    namespace_output=$(oci os ns get --output json 2>&1)
+    exit_code=$?
+    if [[ $exit_code -eq 0 ]]; then
+        namespace=$(echo "$namespace_output" | jq -r '.data // empty' 2>/dev/null)
+        if [[ -z "$namespace" || "$namespace" == "null" ]]; then
+            namespace=$(oci os ns get --query 'data' --raw-output 2>/dev/null)
+        fi
+        TEST_OCI_CONNECTION_NAMESPACE="$namespace"
+        TEST_OCI_CONNECTION_ERROR=""
+        return 0
+    fi
+
+    TEST_OCI_CONNECTION_NAMESPACE=""
+    TEST_OCI_CONNECTION_ERROR="$namespace_output"
+    return "$exit_code"
+}
+
 # ================================
 # 检查 OCI 环境
 # ================================
@@ -2361,12 +2443,12 @@ check_oci_environment() {
     if [[ -f "$OCI_CONFIG_FILE" ]]; then
         echo ""
         echo -n "测试 OCI 连接... "
-        if oci os ns get --output json &>/dev/null; then
-            local namespace
-            namespace=$(oci os ns get --query 'data' --raw-output 2>/dev/null)
-            echo -e "${GREEN}✓ 成功${NC} (命名空间: $namespace)"
+        if test_oci_connection; then
+            echo -e "${GREEN}✓ 成功${NC} (命名空间: $TEST_OCI_CONNECTION_NAMESPACE)"
         else
             echo -e "${RED}✗ 失败${NC}"
+            print_oci_error_detail "$TEST_OCI_CONNECTION_ERROR"
+            print_oci_error_suggestions "$TEST_OCI_CONNECTION_ERROR"
             all_ok=false
         fi
     fi
@@ -2553,12 +2635,12 @@ EOF
         # 验证连接
         echo ""
         log_info "验证 OCI 连接..."
-        if oci os ns get --output json &>/dev/null; then
-            local namespace
-            namespace=$(oci os ns get --query 'data' --raw-output 2>/dev/null)
-            log_success "OCI 连接成功，命名空间: $namespace"
+        if test_oci_connection; then
+            log_success "OCI 连接成功，命名空间: $TEST_OCI_CONNECTION_NAMESPACE"
         else
             log_warn "OCI 连接验证失败，请检查配置"
+            print_oci_error_detail "$TEST_OCI_CONNECTION_ERROR"
+            print_oci_error_suggestions "$TEST_OCI_CONNECTION_ERROR"
         fi
     else
         echo "配置已取消"
@@ -2593,12 +2675,12 @@ view_oci_config() {
 
     # 测试连接
     log_info "测试 OCI 连接..."
-    if oci os ns get --output json &>/dev/null; then
-        local namespace
-        namespace=$(oci os ns get --query 'data' --raw-output 2>/dev/null)
-        log_success "连接成功，命名空间: $namespace"
+    if test_oci_connection; then
+        log_success "连接成功，命名空间: $TEST_OCI_CONNECTION_NAMESPACE"
     else
         log_error "连接失败，请检查配置"
+        print_oci_error_detail "$TEST_OCI_CONNECTION_ERROR"
+        print_oci_error_suggestions "$TEST_OCI_CONNECTION_ERROR"
     fi
 
     pause
