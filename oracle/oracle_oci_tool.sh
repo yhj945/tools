@@ -84,9 +84,13 @@ BEGINNER_CREATE_MEMORY_GB_DEFAULT="24"
 BEGINNER_CREATE_BOOT_VOLUME_GB_DEFAULT="200"
 BEGINNER_CREATE_BOOT_VOLUME_VPUS_DEFAULT="120"
 OCI_UPDATE_CONNECTION_TIMEOUT="${OCI_UPDATE_CONNECTION_TIMEOUT:-10}"
-OCI_UPDATE_READ_TIMEOUT="${OCI_UPDATE_READ_TIMEOUT:-150}"
+OCI_UPDATE_READ_TIMEOUT="${OCI_UPDATE_READ_TIMEOUT:-120}"
 OCI_UPDATE_MAX_RETRIES="${OCI_UPDATE_MAX_RETRIES:-0}"
 OCI_UPDATE_REQUEST_INTERVAL_DEFAULT="${OCI_UPDATE_REQUEST_INTERVAL_DEFAULT:-60}"
+OCI_CREATE_CONNECTION_TIMEOUT="${OCI_CREATE_CONNECTION_TIMEOUT:-10}"
+OCI_CREATE_READ_TIMEOUT="${OCI_CREATE_READ_TIMEOUT:-120}"
+OCI_CREATE_MAX_RETRIES="${OCI_CREATE_MAX_RETRIES:-0}"
+OCI_CREATE_MAX_WAIT_SECONDS="${OCI_CREATE_MAX_WAIT_SECONDS:-120}"
 
 sync_legacy_data_dir() {
     local legacy_dir="$SCRIPT_SOURCE_DIR"
@@ -4745,7 +4749,7 @@ load_create_instance_defaults() {
     CREATE_BOOT_VOLUME_VPUS_PER_GB="$BEGINNER_CREATE_BOOT_VOLUME_VPUS_DEFAULT"
     CREATE_DISPLAY_NAME="oci-instance-$(date +%Y%m%d-%H%M%S)"
     CREATE_ASSIGN_PUBLIC_IP="true"
-    CREATE_RETRY_INTERVAL="60"
+    CREATE_RETRY_INTERVAL="10"
 
     if [[ -f "$config_file" ]] && jq empty "$config_file" 2>/dev/null; then
         CREATE_COMPARTMENT_ID="$(jq -r '.compartmentId // empty' "$config_file")"
@@ -4765,7 +4769,7 @@ load_create_instance_defaults() {
         CREATE_DISPLAY_NAME="$(jq -r '.displayName // empty' "$config_file")"
         [[ -z "$CREATE_DISPLAY_NAME" || "$CREATE_DISPLAY_NAME" == "null" ]] && CREATE_DISPLAY_NAME="oci-instance-$(date +%Y%m%d-%H%M%S)"
         CREATE_ASSIGN_PUBLIC_IP="$(jq -r '.assignPublicIp // true' "$config_file")"
-        CREATE_RETRY_INTERVAL="$(jq -r '.retryInterval // 60' "$config_file")"
+        CREATE_RETRY_INTERVAL="$(jq -r '.retryInterval // 10' "$config_file")"
     fi
 }
 
@@ -4894,7 +4898,7 @@ show_create_instance_config_summary() {
     boot_volume_vpus_per_gb=$(jq -r '.bootVolumeVpusPerGB // "N/A"' "$config_file")
     ocpus=$(jq -r '.ocpus // "N/A"' "$config_file")
     memory_gbs=$(jq -r '.memoryInGBs // "N/A"' "$config_file")
-    retry_interval=$(jq -r '.retryInterval // 30' "$config_file")
+    retry_interval=$(jq -r '.retryInterval // 10' "$config_file")
 
     echo ""
     echo -e "${BOLD}创建实例配置摘要${NC}"
@@ -5353,8 +5357,13 @@ launch_instance_from_config() {
         --ssh-authorized-keys-file "$ssh_public_key"
         --display-name "$display_name"
         --assign-public-ip "$assign_public_ip"
-        --wait-for-state RUNNING
-        --wait-interval-seconds 10
+        # 不等待 RUNNING，launch 接受后即可返回实例 OCID；后续单独轮询开机状态并通知。
+        # --wait-for-state RUNNING
+        # --wait-interval-seconds 10
+        # --max-wait-seconds "$OCI_CREATE_MAX_WAIT_SECONDS"
+        --connection-timeout "$OCI_CREATE_CONNECTION_TIMEOUT"
+        --read-timeout "$OCI_CREATE_READ_TIMEOUT"
+        --max-retries "$OCI_CREATE_MAX_RETRIES"
         --output json
     )
     if [[ -n "$subnet_id" && "$subnet_id" != "null" ]]; then
@@ -5401,6 +5410,72 @@ send_create_success_notification() {
     send_notification \
         "OCI 实例创建成功" \
         "实例 ${display_name} 创建成功\n实例 OCID: ${instance_id}\n规格: ${shape}\nOCPU: ${ocpus}\n内存: ${memory_gbs} GB\n时间: $(date '+%Y-%m-%d %H:%M:%S')"
+}
+
+send_create_boot_notification() {
+    local config_file="$1"
+    local instance_id="$2"
+    local boot_status="$3"
+    local display_name
+    display_name=$(jq -r '.displayName // "N/A"' "$config_file")
+
+    send_notification \
+        "OCI 实例开机${boot_status}" \
+        "实例 ${display_name} 开机${boot_status}\n实例 OCID: ${instance_id}\n时间: $(date '+%Y-%m-%d %H:%M:%S')"
+}
+
+wait_created_instance_running() {
+    local instance_id="$1"
+    local log_prefix="${2:-实例}"
+    local max_wait="${OCI_CREATE_MAX_WAIT_SECONDS:-120}"
+    local interval=10
+    local waited=0
+    local state=""
+
+    [[ -n "$instance_id" && "$instance_id" != "null" ]] || return 1
+
+    while [[ $waited -le $max_wait ]]; do
+        state=$(oci compute instance get \
+            --instance-id "$instance_id" \
+            --query 'data."lifecycle-state"' \
+            --raw-output \
+            --connection-timeout "$OCI_CREATE_CONNECTION_TIMEOUT" \
+            --read-timeout "$OCI_CREATE_READ_TIMEOUT" \
+            --max-retries "$OCI_CREATE_MAX_RETRIES" 2>/dev/null)
+
+        if [[ "$state" == "RUNNING" ]]; then
+            log_success "${log_prefix}已进入 RUNNING"
+            return 0
+        fi
+
+        if [[ "$state" == "TERMINATED" || "$state" == "TERMINATING" ]]; then
+            log_error "${log_prefix}状态异常: $state"
+            return 1
+        fi
+
+        log_info "${log_prefix}当前状态: ${state:-未知}，等待开机..."
+        sleep "$interval"
+        ((waited += interval))
+    done
+
+    log_warn "${log_prefix}等待 RUNNING 超时，最后状态: ${state:-未知}"
+    return 1
+}
+
+notify_created_instance_boot_result() {
+    local config_file="$1"
+    local instance_id="$2"
+
+    [[ -n "$instance_id" && "$instance_id" != "null" ]] || return 1
+
+    if wait_created_instance_running "$instance_id" "实例"; then
+        show_created_instance_summary "$instance_id"
+        send_create_boot_notification "$config_file" "$instance_id" "成功"
+        return 0
+    fi
+
+    send_create_boot_notification "$config_file" "$instance_id" "未完成"
+    return 1
 }
 
 show_created_instance_summary() {
@@ -5495,9 +5570,34 @@ check_existing_create_task() {
     return 0
 }
 
+find_existing_created_instance() {
+    local compartment_id="$1"
+    local display_name="$2"
+
+    [[ -n "$compartment_id" && -n "$display_name" ]] || return 1
+
+    local instances_json
+    instances_json=$(oci compute instance list \
+        --compartment-id "$compartment_id" \
+        --all \
+        --connection-timeout "$OCI_CREATE_CONNECTION_TIMEOUT" \
+        --read-timeout "$OCI_CREATE_READ_TIMEOUT" \
+        --max-retries "$OCI_CREATE_MAX_RETRIES" \
+        --output json 2>/dev/null)
+
+    [[ -n "$instances_json" ]] || return 1
+
+    echo "$instances_json" | jq -r --arg display_name "$display_name" '
+        .data[]
+        | select(.["display-name"] == $display_name)
+        | select((.["lifecycle-state"] // "") != "TERMINATED")
+        | .id
+    ' 2>/dev/null | head -1
+}
+
 create_instance_background_task() {
     local config_file="${1:-$CREATE_INSTANCE_CONFIG}"
-    local retry_interval="${2:-30}"
+    local retry_interval="${2:-10}"
 
     if [[ ! "$retry_interval" =~ ^[0-9]+$ ]]; then
         log_error "重试间隔必须为正整数"
@@ -5618,8 +5718,9 @@ exec_create_instance_task() {
         exit 1
     fi
 
-    local display_name
+    local display_name compartment_id
     display_name=$(jq -r '.displayName // "N/A"' "$config_file")
+    compartment_id=$(jq -r '.compartmentId // ""' "$config_file")
     local attempt
     attempt=$(jq -r '.attempt // 0' "$task_path/task.info")
 
@@ -5627,8 +5728,23 @@ exec_create_instance_task() {
     log_info "实例名称: $display_name"
     log_info "配置文件: $config_file"
     log_info "重试间隔: ${retry_interval}秒"
+    log_info "OCI 创建请求超时: connection=${OCI_CREATE_CONNECTION_TIMEOUT}s, read=${OCI_CREATE_READ_TIMEOUT}s, max_retries=${OCI_CREATE_MAX_RETRIES}, max_wait=${OCI_CREATE_MAX_WAIT_SECONDS}s"
 
     while true; do
+        local existing_instance_id
+        existing_instance_id=$(find_existing_created_instance "$compartment_id" "$display_name" 2>/dev/null || true)
+        if [[ -n "$existing_instance_id" && "$existing_instance_id" != "null" ]]; then
+            log_success "检测到同名实例已存在，视为创建成功"
+            log_info "实例 OCID: $existing_instance_id"
+            update_task_status "$attempt" "success" "" "$existing_instance_id"
+            send_create_success_notification "$config_file" "$existing_instance_id"
+            notify_created_instance_boot_result "$config_file" "$existing_instance_id" || true
+            jq '.status = "completed" | .end_time = "'"$(date -Iseconds)"'"' \
+                "$task_path/task.info" > "$task_path/task.info.tmp"
+            mv "$task_path/task.info.tmp" "$task_path/task.info"
+            exit 0
+        fi
+
         ((attempt++))
         log_info "第 $attempt 次尝试创建实例..."
 
@@ -5641,12 +5757,12 @@ exec_create_instance_task() {
             instance_id=$(echo "$result" | jq -r '.data.id // empty' 2>/dev/null)
             log_success "实例创建成功"
             [[ -n "$instance_id" ]] && log_info "实例 OCID: $instance_id"
-            [[ -n "$instance_id" ]] && show_created_instance_summary "$instance_id"
             update_task_status "$attempt" "success" "" "$instance_id"
+            send_create_success_notification "$config_file" "$instance_id"
+            [[ -n "$instance_id" ]] && notify_created_instance_boot_result "$config_file" "$instance_id" || true
             jq '.status = "completed" | .end_time = "'"$(date -Iseconds)"'"' \
                 "$task_path/task.info" > "$task_path/task.info.tmp"
             mv "$task_path/task.info.tmp" "$task_path/task.info"
-            send_create_success_notification "$config_file" "$instance_id"
             exit 0
         fi
 
@@ -5709,7 +5825,7 @@ create_instance_from_saved_config() {
         1)
             local display_name retry_interval result exit_code instance_id
             display_name=$(jq -r '.displayName // "N/A"' "$config_file")
-            retry_interval=$(jq -r '.retryInterval // 30' "$config_file")
+            retry_interval=$(jq -r '.retryInterval // 10' "$config_file")
 
             if ! check_existing_create_task "$display_name"; then
                 pause
@@ -5725,8 +5841,8 @@ create_instance_from_saved_config() {
                 instance_id=$(echo "$result" | jq -r '.data.id // empty' 2>/dev/null)
                 log_success "实例创建成功"
                 [[ -n "$instance_id" ]] && echo "实例 OCID: $instance_id"
-                [[ -n "$instance_id" ]] && show_created_instance_summary "$instance_id"
                 send_create_success_notification "$config_file" "$instance_id"
+                [[ -n "$instance_id" ]] && notify_created_instance_boot_result "$config_file" "$instance_id" || true
             else
                 log_error "实例创建失败"
                 echo ""
@@ -5742,7 +5858,7 @@ create_instance_from_saved_config() {
             ;;
         2)
             local retry_interval
-            retry_interval=$(jq -r '.retryInterval // 30' "$config_file")
+            retry_interval=$(jq -r '.retryInterval // 10' "$config_file")
             read -p "重试间隔 (秒) [默认: ${retry_interval}]: " REPLY
             retry_interval="${REPLY:-$retry_interval}"
             if [[ ! "$retry_interval" =~ ^[0-9]+$ ]]; then
@@ -5989,19 +6105,19 @@ beginner_create_instance() {
                 instance_id=$(echo "$result" | jq -r '.data.id // empty' 2>/dev/null)
                 log_success "实例创建成功"
                 [[ -n "$instance_id" ]] && echo "实例 OCID: $instance_id"
-                [[ -n "$instance_id" ]] && show_created_instance_summary "$instance_id"
                 send_create_success_notification "$quick_config" "$instance_id"
+                [[ -n "$instance_id" ]] && notify_created_instance_boot_result "$quick_config" "$instance_id" || true
             else
                 log_error "实例创建失败"
                 echo "$result"
                 echo ""
                 read -p "是否创建后台任务自动重试? [Y/n]: " -r
                 [[ -z "$REPLY" ]] && REPLY="y"
-                [[ $REPLY =~ ^[Yy]$ ]] && create_instance_background_task "$quick_config" "$(jq -r '.retryInterval // 60' "$quick_config")"
+                [[ $REPLY =~ ^[Yy]$ ]] && create_instance_background_task "$quick_config" "$(jq -r '.retryInterval // 10' "$quick_config")"
             fi
             ;;
         2)
-            create_instance_background_task "$quick_config" "$(jq -r '.retryInterval // 60' "$quick_config")"
+            create_instance_background_task "$quick_config" "$(jq -r '.retryInterval // 10' "$quick_config")"
             ;;
         0)
             return 0

@@ -170,6 +170,8 @@ Notes:
 - Supports both instance update tasks and instance creation tasks
 - Direct instance update tasks use `request_interval` for request scheduling, defaulting to 60 seconds; if a previous request has not returned, the next request is still sent on schedule
 - Full update flow and instance creation tasks continue to use `retry_interval` as the retry delay after a failed attempt
+- Instance creation tasks send a creation-success notification as soon as OCI accepts the launch request and returns an instance OCID, then continue waiting for `RUNNING` and send a boot-result notification
+- Instance creation tasks cap the wait time of each OCI request and check for a non-terminated instance with the same display name before each retry, avoiding duplicate creation if a previous request timed out after OCI accepted it
 - Execution count is preserved across restarts
 - Supports resuming stopped tasks
 - Supports real-time log viewing
