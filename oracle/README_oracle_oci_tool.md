@@ -25,6 +25,7 @@ An interactive Bash script for managing OCI compute instance configuration and i
   - Prints a success summary with instance OCID, status, private IP, and public IP
 - **Configuration update**: update instance OCPU and memory settings
   - Direct update without stopping the instance
+  - Direct-update background tasks send non-blocking requests at a fixed request interval, defaulting to once every 60 seconds
   - Full flow: stop -> update -> start
 - **Background tasks**: create and manage background tasks with auto-retry
 - **Notifications**: success notifications through email (SMTP) or Telegram bot
@@ -165,8 +166,10 @@ Notes:
 
 ## Background Tasks
 
-- Tasks run in the background with auto-retry
+- Tasks run in the background with auto-retry or fixed-interval requests
 - Supports both instance update tasks and instance creation tasks
+- Direct instance update tasks use `request_interval` for request scheduling, defaulting to 60 seconds; if a previous request has not returned, the next request is still sent on schedule
+- Full update flow and instance creation tasks continue to use `retry_interval` as the retry delay after a failed attempt
 - Execution count is preserved across restarts
 - Supports resuming stopped tasks
 - Supports real-time log viewing

@@ -83,6 +83,10 @@ BEGINNER_CREATE_OCPUS_DEFAULT="4"
 BEGINNER_CREATE_MEMORY_GB_DEFAULT="24"
 BEGINNER_CREATE_BOOT_VOLUME_GB_DEFAULT="200"
 BEGINNER_CREATE_BOOT_VOLUME_VPUS_DEFAULT="120"
+OCI_UPDATE_CONNECTION_TIMEOUT="${OCI_UPDATE_CONNECTION_TIMEOUT:-10}"
+OCI_UPDATE_READ_TIMEOUT="${OCI_UPDATE_READ_TIMEOUT:-150}"
+OCI_UPDATE_MAX_RETRIES="${OCI_UPDATE_MAX_RETRIES:-0}"
+OCI_UPDATE_REQUEST_INTERVAL_DEFAULT="${OCI_UPDATE_REQUEST_INTERVAL_DEFAULT:-60}"
 
 sync_legacy_data_dir() {
     local legacy_dir="$SCRIPT_SOURCE_DIR"
@@ -810,14 +814,34 @@ check_existing_task_for_instance() {
 }
 
 # 创建新任务
-# 参数: $1=task_type, $2=instance_ocid, $3=target_ocpus, $4=target_memory, $5=retry_interval, $6=skip_check(可选)
+# 参数: $1=task_type, $2=instance_ocid, $3=target_ocpus, $4=target_memory, $5=retry_interval, $6=request_interval, $7=skip_check(可选)
 create_background_task() {
     local task_type="$1"  # direct_update_instance 或 full_update_instance
     local instance_ocid="$2"
     local target_ocpus="$3"
     local target_memory="$4"
-    local retry_interval="$5"
-    local skip_check="${6:-false}"  # 是否跳过已有任务检测
+    local retry_interval="${5:-10}"
+    local request_interval="${6:-}"
+    local skip_check="${7:-false}"  # 是否跳过已有任务检测
+    local request_interval_json="null"
+
+    # 兼容旧调用: 第 6 个参数原来是 skip_check
+    if [[ "$request_interval" == "true" || "$request_interval" == "false" ]]; then
+        skip_check="$request_interval"
+        request_interval=""
+    fi
+
+    if [[ "$task_type" == "direct_update_instance" || "$task_type" == "direct_update" ]]; then
+        if [[ ! "$request_interval" =~ ^[0-9]+$ || "$request_interval" -le 0 ]]; then
+            request_interval="$OCI_UPDATE_REQUEST_INTERVAL_DEFAULT"
+        fi
+        request_interval_json="$request_interval"
+        [[ "$retry_interval" =~ ^[0-9]+$ ]] || retry_interval=0
+    else
+        if [[ ! "$retry_interval" =~ ^[0-9]+$ || "$retry_interval" -le 0 ]]; then
+            retry_interval=10
+        fi
+    fi
 
     init_task_dir
 
@@ -877,12 +901,15 @@ create_background_task() {
         fi
     fi
 
-    # 生成任务 ID
-    local task_id=$(date +%Y%m%d-%H%M%S)_$$
-    local task_path="$TASK_DIR/$task_id"
-
-    # 创建任务目录
-    mkdir -p "$task_path"
+    # 生成任务 ID，并用 mkdir 原子创建目录，避免同一秒内连续创建任务时覆盖记录。
+    local task_id task_path
+    while true; do
+        task_id="$(date +%Y%m%d-%H%M%S)_${BASHPID:-$$}_$RANDOM"
+        task_path="$TASK_DIR/$task_id"
+        if mkdir "$task_path" 2>/dev/null; then
+            break
+        fi
+    done
 
     # 写入任务信息
     cat > "$task_path/task.info" << EOF
@@ -893,6 +920,7 @@ create_background_task() {
     "target_ocpus": $target_ocpus,
     "target_memory": $target_memory,
     "retry_interval": $retry_interval,
+    "request_interval": $request_interval_json,
     "create_time": "$(date -Iseconds)",
     "status": "running"
 }
@@ -900,7 +928,7 @@ EOF
 
     # 启动后台任务
     (
-        exec_background_task "$task_id" "$task_type" "$instance_ocid" "$target_ocpus" "$target_memory" "$retry_interval"
+        exec_background_task "$task_id" "$task_type" "$instance_ocid" "$target_ocpus" "$target_memory" "$retry_interval" "$request_interval"
     ) &>"$task_path/task.log" &
 
     local pid=$!
@@ -925,21 +953,219 @@ exec_background_task() {
     local target_ocpus="$4"
     local target_memory="$5"
     local retry_interval="$6"
+    local request_interval="${7:-}"
 
     local task_path="$TASK_DIR/$task_id"
     local log_file="$task_path/task.log"
     local status_file="$task_path/task.status"
+    local task_lock_dir="$task_path/.write.lock"
+
+    acquire_task_lock() {
+        local lock_pid
+        while ! mkdir "$task_lock_dir" 2>/dev/null; do
+            if [[ -f "$task_lock_dir/pid" ]]; then
+                lock_pid=$(cat "$task_lock_dir/pid" 2>/dev/null || true)
+                if [[ -n "$lock_pid" ]] && ! kill -0 "$lock_pid" 2>/dev/null; then
+                    rm -rf "$task_lock_dir" 2>/dev/null || true
+                    continue
+                fi
+            fi
+            sleep 0.1
+        done
+        printf '%s\n' "${BASHPID:-$$}" > "$task_lock_dir/pid" 2>/dev/null || true
+    }
+
+    release_task_lock() {
+        rm -rf "$task_lock_dir" 2>/dev/null || true
+    }
+
+    with_task_lock() {
+        local rc
+        acquire_task_lock
+        "$@"
+        rc=$?
+        release_task_lock
+        return "$rc"
+    }
+
+    append_task_log_unlocked() {
+        local level="$1"
+        local message="$2"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $message" >> "$log_file"
+    }
 
     log_info() {
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] $1" >> "$log_file"
+        with_task_lock append_task_log_unlocked "INFO" "$1"
     }
 
     log_error() {
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] $1" >> "$log_file"
+        with_task_lock append_task_log_unlocked "ERROR" "$1"
     }
 
     log_success() {
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [SUCCESS] $1" >> "$log_file"
+        with_task_lock append_task_log_unlocked "SUCCESS" "$1"
+    }
+
+    stop_running_children() {
+        local child_pid
+        for child_pid in $(jobs -pr 2>/dev/null); do
+            kill "$child_pid" 2>/dev/null || true
+        done
+        wait 2>/dev/null || true
+    }
+
+    handle_task_termination() {
+        log_info "收到停止信号，正在停止已发起的请求..."
+        stop_running_children
+        exit 0
+    }
+
+    trap handle_task_termination TERM INT
+
+    task_status_is_running() {
+        [[ -f "$task_path/task.info" ]] || return 1
+        [[ "$(jq -r '.status // "running"' "$task_path/task.info" 2>/dev/null)" == "running" ]]
+    }
+
+    update_task_attempt_scheduled_unlocked() {
+        local attempt="$1"
+        local temp_file="$task_path/task.info.tmp.${BASHPID:-$$}.$RANDOM"
+
+        [[ -f "$task_path/task.info" ]] || return 1
+        [[ "$(jq -r '.status // "running"' "$task_path/task.info" 2>/dev/null)" == "running" ]] || return 1
+
+        jq --argjson attempt "$attempt" \
+           --arg time "$(date -Iseconds)" \
+           '.attempt = ([($attempt), (.attempt // 0)] | max) |
+            .last_scheduled_time = $time' \
+           "$task_path/task.info" > "$temp_file" && mv "$temp_file" "$task_path/task.info"
+    }
+
+    update_task_attempt_scheduled() {
+        with_task_lock update_task_attempt_scheduled_unlocked "$1"
+    }
+
+    update_task_status_unlocked() {
+        local attempt="$1"
+        local last_status="$2"
+        local last_error="$3"
+        local temp_file="$task_path/task.info.tmp.${BASHPID:-$$}.$RANDOM"
+
+        [[ -f "$task_path/task.info" ]] || return 1
+        [[ "$(jq -r '.status // "running"' "$task_path/task.info" 2>/dev/null)" == "running" ]] || return 1
+
+        jq --argjson attempt "$attempt" \
+           --arg status "$last_status" \
+           --arg error "$last_error" \
+           --arg time "$(date -Iseconds)" \
+           '.attempt = ([($attempt), (.attempt // 0)] | max) |
+            if $attempt >= (.last_result_attempt // 0) then
+                .last_result_attempt = $attempt |
+                .last_status = $status |
+                .last_error = $error |
+                .last_attempt_time = $time
+            else
+                .
+            end' \
+           "$task_path/task.info" > "$temp_file" && mv "$temp_file" "$task_path/task.info"
+    }
+
+    update_task_status() {
+        with_task_lock update_task_status_unlocked "$1" "$2" "$3"
+    }
+
+    mark_task_completed_unlocked() {
+        local attempt="$1"
+        local temp_file="$task_path/task.info.tmp.${BASHPID:-$$}.$RANDOM"
+
+        [[ -f "$task_path/task.info" ]] || return 1
+        [[ "$(jq -r '.status // "running"' "$task_path/task.info" 2>/dev/null)" == "running" ]] || return 1
+
+        jq --argjson attempt "$attempt" \
+           --arg time "$(date -Iseconds)" \
+           '.attempt = ([($attempt), (.attempt // 0)] | max) |
+            .last_result_attempt = ([($attempt), (.last_result_attempt // 0)] | max) |
+            .last_status = "success" |
+            .last_error = "" |
+            .last_attempt_time = $time |
+            .status = "completed" |
+            .end_time = $time' \
+           "$task_path/task.info" > "$temp_file" && mv "$temp_file" "$task_path/task.info"
+    }
+
+    mark_task_completed() {
+        with_task_lock mark_task_completed_unlocked "$1"
+    }
+
+    run_direct_update_attempt() {
+        local attempt_no="$1"
+        local attempt_start result exit_code attempt_elapsed error_msg
+
+        attempt_start=$(date +%s)
+        result=$(oci compute instance update \
+            --instance-id "$instance_ocid" \
+            --shape-config "{\"ocpus\": $target_ocpus, \"memory-in-gbs\": $target_memory}" \
+            --force \
+            --connection-timeout "$OCI_UPDATE_CONNECTION_TIMEOUT" \
+            --read-timeout "$OCI_UPDATE_READ_TIMEOUT" \
+            --max-retries "$OCI_UPDATE_MAX_RETRIES" \
+            --output json 2>&1)
+        exit_code=$?
+        attempt_elapsed=$(($(date +%s) - attempt_start))
+
+        if [[ $exit_code -eq 0 ]]; then
+            if mark_task_completed "$attempt_no"; then
+                log_info "第 $attempt_no 次请求耗时: ${attempt_elapsed}秒"
+                log_success "第 $attempt_no 次请求更新成功！"
+                send_notification "OCI 实例配置更新成功" "实例 ${instance_ocid} 配置更新成功\n更新内容:\n- OCPUs: ${target_ocpus}\n- Memory: ${target_memory} GB\n时间: $(date '+%Y-%m-%d %H:%M:%S')"
+            else
+                log_info "第 $attempt_no 次请求成功返回，但任务已结束，已忽略该结果"
+            fi
+            return 0
+        fi
+
+        error_msg=$(echo "$result" | jq -r '.message // .error.message // "未知错误"' 2>/dev/null || echo "$result")
+        if update_task_status "$attempt_no" "failed" "$error_msg"; then
+            log_error "第 $attempt_no 次请求更新失败: $result"
+            log_info "第 $attempt_no 次请求耗时: ${attempt_elapsed}秒"
+        else
+            log_info "第 $attempt_no 次请求失败返回，但任务已结束，已忽略该结果"
+        fi
+    }
+
+    run_direct_update_scheduler() {
+        local scheduled_request_interval="$request_interval"
+        local slept
+
+        if [[ ! "$scheduled_request_interval" =~ ^[0-9]+$ || "$scheduled_request_interval" -le 0 ]]; then
+            scheduled_request_interval=$(jq -r '.request_interval // empty' "$task_path/task.info" 2>/dev/null)
+        fi
+        if [[ ! "$scheduled_request_interval" =~ ^[0-9]+$ || "$scheduled_request_interval" -le 0 ]]; then
+            scheduled_request_interval="$OCI_UPDATE_REQUEST_INTERVAL_DEFAULT"
+        fi
+
+        log_info "请求调度模式: 固定间隔非阻塞请求"
+        log_info "请求间隔: ${scheduled_request_interval}秒"
+
+        local attempt
+        attempt=$(jq -r '.attempt // 0' "$task_path/task.info" 2>/dev/null)
+        while task_status_is_running; do
+            ((attempt++))
+            update_task_attempt_scheduled "$attempt" || break
+            log_info "第 $attempt 次请求已发起（非阻塞）"
+            run_direct_update_attempt "$attempt" &
+
+            slept=0
+            while [[ $slept -lt $scheduled_request_interval ]]; do
+                task_status_is_running || break 2
+                sleep 1
+                ((slept++))
+            done
+        done
+
+        log_info "请求调度器已停止，等待已发起请求返回..."
+        wait 2>/dev/null || true
+        exit 0
     }
 
     log_info "后台任务启动"
@@ -947,30 +1173,12 @@ exec_background_task() {
     log_info "实例 OCID: $instance_ocid"
     log_info "目标 OCPU: $target_ocpus"
     log_info "目标内存: ${target_memory}GB"
-    log_info "重试间隔: ${retry_interval}秒"
+    log_info "OCI 请求超时: connection=${OCI_UPDATE_CONNECTION_TIMEOUT}s, read=${OCI_UPDATE_READ_TIMEOUT}s, max_retries=${OCI_UPDATE_MAX_RETRIES}"
+    repair_oci_key_permissions >/dev/null 2>&1 || true
 
-    # 更新任务状态函数
-    update_task_status() {
-        local attempt="$1"
-        local last_status="$2"
-        local last_error="$3"
-
-        # 更新任务信息文件
-        if [[ -f "$task_path/task.info" ]]; then
-            local temp_file="$task_path/task.info.tmp"
-
-            jq --arg attempt "$attempt" \
-               --arg status "$last_status" \
-               --arg error "$last_error" \
-               --arg time "$(date -Iseconds)" \
-               '.attempt = ($attempt | tonumber) |
-                .last_status = $status |
-                .last_error = $error |
-                .last_attempt_time = $time' \
-               "$task_path/task.info" > "$temp_file"
-            mv "$temp_file" "$task_path/task.info"
-        fi
-    }
+    if [[ "$task_type" == "direct_update_instance" || "$task_type" == "direct_update" ]]; then
+        run_direct_update_scheduler
+    fi
 
     # 从 task.info 读取当前执行次数，而不是从 0 开始
     local attempt=$(jq -r '.attempt // 0' "$task_path/task.info")
@@ -978,36 +1186,7 @@ exec_background_task() {
         ((attempt++))
         log_info "第 $attempt 次尝试..."
 
-        if [[ "$task_type" == "direct_update_instance" || "$task_type" == "direct_update" ]]; then
-            # 直接更新（不停止实例）
-            local result
-            result=$(oci compute instance update \
-                --instance-id "$instance_ocid" \
-                --shape-config "{\"ocpus\": $target_ocpus, \"memory-in-gbs\": $target_memory}" \
-                --force \
-                --output json 2>&1)
-
-            if [[ $? -eq 0 ]]; then
-                log_success "更新成功！"
-                # 发送通知
-                send_notification "OCI 实例配置更新成功" "实例 ${instance_ocid} 配置更新成功\n更新内容:\n- OCPUs: ${target_ocpus}\n- Memory: ${target_memory} GB\n时间: $(date '+%Y-%m-%d %H:%M:%S')"
-                # 更新任务状态
-                update_task_status "$attempt" "success" ""
-                jq '.status = "completed" | .end_time = "'"$(date -Iseconds)"'"' \
-                    "$task_path/task.info" > "$task_path/task.info.tmp"
-                mv "$task_path/task.info.tmp" "$task_path/task.info"
-                exit 0
-            else
-                # 提取错误信息
-                local error_msg
-                error_msg=$(echo "$result" | jq -r '.message // .error.message // "未知错误"' 2>/dev/null || echo "$result")
-                log_error "更新失败: $result"
-                update_task_status "$attempt" "failed" "$error_msg"
-                log_info "等待 ${retry_interval} 秒后重试..."
-                sleep "$retry_interval"
-            fi
-
-        elif [[ "$task_type" == "full_update_instance" || "$task_type" == "full_update" ]]; then
+        if [[ "$task_type" == "full_update_instance" || "$task_type" == "full_update" ]]; then
             # 完整更新流程（停止→更新→启动）
 
             # 步骤 1: 停止实例
@@ -1051,6 +1230,9 @@ exec_background_task() {
                 --instance-id "$instance_ocid" \
                 --shape-config "{\"ocpus\": $target_ocpus, \"memory-in-gbs\": $target_memory}" \
                 --force \
+                --connection-timeout "$OCI_UPDATE_CONNECTION_TIMEOUT" \
+                --read-timeout "$OCI_UPDATE_READ_TIMEOUT" \
+                --max-retries "$OCI_UPDATE_MAX_RETRIES" \
                 --output json 2>&1)
 
             if [[ $? -ne 0 ]]; then
@@ -1378,7 +1560,11 @@ view_task_detail() {
                     echo -e "类型\t$task_type_label"
                     echo -e "实例OCID\t${instance_ocid:0:50}..."
                     echo -e "目标配置\t$target_label"
-                    echo -e "重试间隔\t$(jq -r '.retry_interval // 10' "$task_info") 秒"
+                    if [[ "$task_type" == "direct_update" || "$task_type" == "direct_update_instance" ]]; then
+                        echo -e "请求间隔\t$(jq -r '.request_interval // 60' "$task_info") 秒"
+                    else
+                        echo -e "重试间隔\t$(jq -r '.retry_interval // 10' "$task_info") 秒"
+                    fi
                     echo -e "创建时间\t$create_time"
                     echo -e "当前状态\t${status_color}${status}${NC}"
                     echo -e "执行次数\t$attempt"
@@ -1593,8 +1779,19 @@ resume_task() {
     local target_ocpus=$(jq -r '.target_ocpus' "$task_info")
     local target_memory=$(jq -r '.target_memory' "$task_info")
     local retry_interval=$(jq -r '.retry_interval' "$task_info")
+    local request_interval=$(jq -r '.request_interval // ""' "$task_info")
     local current_status=$(jq -r '.status' "$task_info")
     local config_file=$(jq -r '.config_file // ""' "$task_info")
+
+    if [[ "$task_type" == "direct_update" || "$task_type" == "direct_update_instance" ]]; then
+        if [[ ! "$request_interval" =~ ^[0-9]+$ || "$request_interval" -le 0 ]]; then
+            request_interval="$OCI_UPDATE_REQUEST_INTERVAL_DEFAULT"
+            jq --argjson request_interval "$request_interval" \
+               '.request_interval = $request_interval' \
+               "$task_info" > "$task_info.tmp" && mv "$task_info.tmp" "$task_info"
+            log_info "旧直接更新任务缺少 request_interval，已自动设置为默认 ${request_interval} 秒"
+        fi
+    fi
 
     # 检查任务状态
     if [[ "$current_status" == "running" ]]; then
@@ -1616,7 +1813,7 @@ resume_task() {
         ) &>"$task_path/task.log" &
     else
         (
-            exec_background_task "$task_id" "$task_type" "$instance_ocid" "$target_ocpus" "$target_memory" "$retry_interval"
+            exec_background_task "$task_id" "$task_type" "$instance_ocid" "$target_ocpus" "$target_memory" "$retry_interval" "$request_interval"
         ) &>"$task_path/task.log" &
     fi
 
@@ -2240,7 +2437,50 @@ check_oci_config() {
         log_info "请先执行 [2] 初始化 OCI 配置"
         return 1
     fi
+    repair_oci_key_permissions >/dev/null 2>&1 || true
     return 0
+}
+
+get_oci_key_file_from_config() {
+    local config_file="${1:-$OCI_CONFIG_FILE}"
+    local key_file
+
+    [[ -f "$config_file" ]] || return 1
+    key_file=$(grep "^key_file=" "$config_file" 2>/dev/null | cut -d'=' -f2- | head -1)
+    [[ -n "$key_file" ]] || return 1
+    key_file="${key_file/#\~/$HOME}"
+    printf '%s\n' "$key_file"
+}
+
+repair_oci_key_permissions() {
+    local key_file key_dir
+
+    key_file="$(get_oci_key_file_from_config 2>/dev/null || true)"
+    [[ -n "$key_file" ]] || return 0
+    [[ -e "$key_file" ]] || return 0
+
+    if [[ -L "$key_file" ]]; then
+        log_warn "OCI 私钥文件是符号链接，已跳过自动修复权限: $key_file"
+        return 1
+    fi
+
+    key_dir="$(dirname "$key_file")"
+    if [[ -d "$key_dir" && ! -L "$key_dir" ]]; then
+        chmod 700 "$key_dir" 2>/dev/null || true
+    fi
+
+    if chmod 600 "$key_file" 2>/dev/null; then
+        return 0
+    fi
+
+    if command -v oci >/dev/null 2>&1; then
+        if oci setup repair-file-permissions --file "$key_file" >/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+
+    log_warn "无法自动修复 OCI 私钥权限，请手动执行: chmod 600 $key_file"
+    return 1
 }
 
 print_oci_error_detail() {
@@ -2307,6 +2547,8 @@ print_oci_error_suggestions() {
 
 test_oci_connection() {
     local namespace_output exit_code namespace
+
+    repair_oci_key_permissions >/dev/null 2>&1 || true
 
     namespace_output=$(oci os ns get --output json 2>&1)
     exit_code=$?
@@ -2630,6 +2872,7 @@ key_file=$KEY_FILE
 EOF
 
         chmod 600 "$OCI_CONFIG_FILE"
+        repair_oci_key_permissions >/dev/null 2>&1 || true
         log_success "OCI CLI 配置已保存到: $OCI_CONFIG_FILE"
 
         # 验证连接
@@ -3092,9 +3335,14 @@ update_instance_config_direct() {
     read -p "目标内存 (GB) [默认: 24]: " TARGET_MEMORY
     TARGET_MEMORY="${TARGET_MEMORY:-24}"
 
-    # 重试间隔
-    read -p "重试间隔 (秒) [默认: 10]: " RETRY_INTERVAL
-    RETRY_INTERVAL="${RETRY_INTERVAL:-10}"
+    # 请求间隔
+    read -p "请求间隔 (秒) [默认: ${OCI_UPDATE_REQUEST_INTERVAL_DEFAULT}]: " REQUEST_INTERVAL
+    REQUEST_INTERVAL="${REQUEST_INTERVAL:-$OCI_UPDATE_REQUEST_INTERVAL_DEFAULT}"
+    if [[ ! "$REQUEST_INTERVAL" =~ ^[0-9]+$ || "$REQUEST_INTERVAL" -le 0 ]]; then
+        log_error "请求间隔必须为正整数"
+        pause
+        return 1
+    fi
 
     # 获取当前实例信息
     log_info "获取实例当前配置..."
@@ -3122,7 +3370,7 @@ update_instance_config_direct() {
         echo "目标配置:"
         echo "  目标 OCPU: $TARGET_OCPUS"
         echo "  目标内存: ${TARGET_MEMORY} GB"
-        echo "  重试间隔: ${RETRY_INTERVAL} 秒"
+        echo "  请求间隔: ${REQUEST_INTERVAL} 秒"
     fi
 
     echo ""
@@ -3137,7 +3385,7 @@ update_instance_config_direct() {
     fi
 
     # 创建后台任务
-    create_background_task "direct_update_instance" "$INSTANCE_OCID" "$TARGET_OCPUS" "$TARGET_MEMORY" "$RETRY_INTERVAL"
+    create_background_task "direct_update_instance" "$INSTANCE_OCID" "$TARGET_OCPUS" "$TARGET_MEMORY" "0" "$REQUEST_INTERVAL"
 }
 
 resize_instance_boot_volume() {
@@ -3198,7 +3446,7 @@ resize_instance_boot_volume() {
 
 beginner_update_instance() {
     local instance_count="$1"
-    local choice target_ocpus target_memory target_boot_volume retry_interval selected_ocid
+    local choice target_ocpus target_memory target_boot_volume request_interval selected_ocid
 
     echo ""
     echo -e "${BOLD}一键修改实例配置${NC}"
@@ -3223,11 +3471,11 @@ beginner_update_instance() {
     target_memory="${target_memory:-$BEGINNER_UPDATE_MEMORY_GB_DEFAULT}"
     read -p "目标启动盘 GB [默认: ${BEGINNER_UPDATE_BOOT_VOLUME_GB_DEFAULT}]: " target_boot_volume
     target_boot_volume="${target_boot_volume:-$BEGINNER_UPDATE_BOOT_VOLUME_GB_DEFAULT}"
-    read -p "后台重试间隔秒 [默认: 10]: " retry_interval
-    retry_interval="${retry_interval:-10}"
+    read -p "后台请求间隔秒 [默认: ${OCI_UPDATE_REQUEST_INTERVAL_DEFAULT}]: " request_interval
+    request_interval="${request_interval:-$OCI_UPDATE_REQUEST_INTERVAL_DEFAULT}"
 
-    if [[ ! "$target_ocpus" =~ ^[0-9]+([.][0-9]+)?$ || ! "$target_memory" =~ ^[0-9]+([.][0-9]+)?$ || ! "$target_boot_volume" =~ ^[0-9]+$ ]]; then
-        log_error "目标 OCPU、内存或启动盘大小格式无效"
+    if [[ ! "$target_ocpus" =~ ^[0-9]+([.][0-9]+)?$ || ! "$target_memory" =~ ^[0-9]+([.][0-9]+)?$ || ! "$target_boot_volume" =~ ^[0-9]+$ || ! "$request_interval" =~ ^[0-9]+$ || "$request_interval" -le 0 ]]; then
+        log_error "目标 OCPU、内存、启动盘大小或请求间隔格式无效"
         return 1
     fi
 
@@ -3251,6 +3499,9 @@ beginner_update_instance() {
         --instance-id "$selected_ocid" \
         --shape-config "{\"ocpus\": $target_ocpus, \"memory-in-gbs\": $target_memory}" \
         --force \
+        --connection-timeout "$OCI_UPDATE_CONNECTION_TIMEOUT" \
+        --read-timeout "$OCI_UPDATE_READ_TIMEOUT" \
+        --max-retries "$OCI_UPDATE_MAX_RETRIES" \
         --output json 2>&1)
     exit_code=$?
 
@@ -3259,7 +3510,7 @@ beginner_update_instance() {
     else
         log_error "OCPU/内存更新失败，将创建后台任务自动重试"
         echo "$update_result"
-        create_background_task "direct_update_instance" "$selected_ocid" "$target_ocpus" "$target_memory" "$retry_interval" "true"
+        create_background_task "direct_update_instance" "$selected_ocid" "$target_ocpus" "$target_memory" "0" "$request_interval" "true"
     fi
 
     resize_instance_boot_volume "$selected_ocid" "$target_boot_volume" || true
@@ -3589,6 +3840,9 @@ update_instance_from_file() {
         local update_result
         update_result=$(yes | oci compute instance update \
             --from-json "file://$config_file" \
+            --connection-timeout "$OCI_UPDATE_CONNECTION_TIMEOUT" \
+            --read-timeout "$OCI_UPDATE_READ_TIMEOUT" \
+            --max-retries "$OCI_UPDATE_MAX_RETRIES" \
             --output json 2>&1)
 
         local exit_code=$?
@@ -3622,7 +3876,7 @@ update_instance_from_file() {
                 retry_interval="${retry_interval:-10}"
 
                 # 创建后台任务（跳过检测，因为前面已经检测过了）
-                create_background_task "full_update_instance" "$instance_id" "$target_ocpus" "$target_memory" "$retry_interval" "true"
+                create_background_task "full_update_instance" "$instance_id" "$target_ocpus" "$target_memory" "$retry_interval" "" "true"
             fi
         fi
     else
@@ -3632,6 +3886,9 @@ update_instance_from_file() {
         local update_result
         update_result=$(yes | oci compute instance update \
             --from-json "file://$config_file" \
+            --connection-timeout "$OCI_UPDATE_CONNECTION_TIMEOUT" \
+            --read-timeout "$OCI_UPDATE_READ_TIMEOUT" \
+            --max-retries "$OCI_UPDATE_MAX_RETRIES" \
             --output json 2>&1)
 
         local exit_code=$?
@@ -3646,12 +3903,16 @@ update_instance_from_file() {
             echo ""
             read -p "是否创建后台任务持续监控并重试? [y/N]: " -r
             if [[ $REPLY =~ ^[Yy]$ ]]; then
-                local retry_interval
-                read -p "重试间隔 (秒) [默认: 10]: " retry_interval
-                retry_interval="${retry_interval:-10}"
+                local request_interval
+                read -p "请求间隔 (秒) [默认: ${OCI_UPDATE_REQUEST_INTERVAL_DEFAULT}]: " request_interval
+                request_interval="${request_interval:-$OCI_UPDATE_REQUEST_INTERVAL_DEFAULT}"
+                if [[ ! "$request_interval" =~ ^[0-9]+$ || "$request_interval" -le 0 ]]; then
+                    log_error "请求间隔必须为正整数"
+                    return 1
+                fi
 
                 # 创建后台任务（跳过检测，因为前面已经检测过了）
-                create_background_task "direct_update_instance" "$instance_id" "$target_ocpus" "$target_memory" "$retry_interval" "true"
+                create_background_task "direct_update_instance" "$instance_id" "$target_ocpus" "$target_memory" "0" "$request_interval" "true"
             fi
         else
             log_error "更新命令执行失败"
@@ -3665,12 +3926,16 @@ update_instance_from_file() {
             [[ -z "$REPLY" ]] && REPLY="y"
 
             if [[ $REPLY =~ ^[Yy]$ ]]; then
-                local retry_interval
-                read -p "重试间隔 (秒) [默认: 10]: " retry_interval
-                retry_interval="${retry_interval:-10}"
+                local request_interval
+                read -p "请求间隔 (秒) [默认: ${OCI_UPDATE_REQUEST_INTERVAL_DEFAULT}]: " request_interval
+                request_interval="${request_interval:-$OCI_UPDATE_REQUEST_INTERVAL_DEFAULT}"
+                if [[ ! "$request_interval" =~ ^[0-9]+$ || "$request_interval" -le 0 ]]; then
+                    log_error "请求间隔必须为正整数"
+                    return 1
+                fi
 
                 # 创建后台任务（跳过检测，因为前面已经检测过了）
-                create_background_task "direct_update_instance" "$instance_id" "$target_ocpus" "$target_memory" "$retry_interval" "true"
+                create_background_task "direct_update_instance" "$instance_id" "$target_ocpus" "$target_memory" "0" "$request_interval" "true"
             fi
         fi
     fi
@@ -6007,7 +6272,7 @@ update_by_input_params() {
         echo -e "${BOLD}----------------------------------------${NC}"
         echo ""
         echo "更新方式:"
-        echo "  1) 直接更新            (仅更新配置，不停止实例)"
+        echo "  1) 直接更新            (更新成功自动重启)"
         echo "  2) 完整更新流程        (停止→更新→启动)"
         echo "  0) 返回上一级"
         echo ""
