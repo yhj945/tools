@@ -51,4 +51,7 @@ node_modules/
 # Go
 vendor/
 
+# Local planning artifacts
+docs/superpowers/plans/
+
 temp/
