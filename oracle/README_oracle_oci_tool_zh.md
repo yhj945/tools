@@ -7,9 +7,9 @@
 - **OCI 环境检查**：验证 OCI CLI、jq、配置文件和连接状态
   - 缺失常见依赖时会自动尝试安装
 - **实例管理**：列出、查看、启动、停止实例
-- **一键修改实例配置**：默认将实例改为 4 OCPU / 24 GB 内存，并尝试将启动盘扩容到 200 GB
+- **一键修改实例配置**：默认将实例改为 4 OCPU / 24 GB 内存，并尝试将启动盘扩容到 200 GB；默认值可在 `[4] 管理实例` 菜单中修改
 - **实例创建**：保存关键参数并复用已保存配置创建新实例
-  - 一键创建实例默认使用 Ubuntu 24.04、A1.Flex、4 OCPU、24 GB、200 GB 启动盘、120 VPU/GB
+  - 一键创建实例默认使用 Ubuntu 24.04、A1.Flex、4 OCPU、24 GB、200 GB 启动盘、120 VPU/GB；默认值可在 `[5] 创建实例` 菜单中修改
   - 一键创建实例会复用区间默认值，并按“获取关键参数并保存”的查询方式获取可用性域、子网和镜像 ID
   - 如查询不到可用性域、子网或镜像 ID，会停止并提示人工处理
   - 如未找到 SSH 公钥，会自动在数据目录生成实例登录密钥对
@@ -141,6 +141,7 @@ bash <(curl -sL https://raw.githubusercontent.com/yhj945/tools/main/oracle/oracl
 │   └── oci_instance_key.pub
 ├── notification_config.conf
 ├── tasks/
+├── beginner_defaults.json
 ├── update_instance_config.json
 ├── create_instance_config.json
 ├── create_instance_beginner.json

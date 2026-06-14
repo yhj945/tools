@@ -7,9 +7,9 @@ An interactive Bash script for managing OCI compute instance configuration and i
 - **OCI environment check**: verifies OCI CLI, jq, config files, and connectivity
   - Automatically attempts to install common missing dependencies
 - **Instance management**: list, view, start, and stop instances
-- **One-click instance configuration update**: defaults to 4 OCPU / 24 GB memory and tries to expand the boot volume to 200 GB
+- **One-click instance configuration update**: defaults to 4 OCPU / 24 GB memory and tries to expand the boot volume to 200 GB; defaults can be changed from the `[4] Manage instances` menu
 - **Instance creation**: save key parameters and reuse saved config to create new instances
-  - One-click creation defaults to Ubuntu 24.04, A1.Flex, 4 OCPU, 24 GB memory, 200 GB boot volume, and 120 VPU/GB
+  - One-click creation defaults to Ubuntu 24.04, A1.Flex, 4 OCPU, 24 GB memory, 200 GB boot volume, and 120 VPU/GB; defaults can be changed from the `[5] Create instance` menu
   - One-click creation reuses the default compartment and queries availability domain, subnet, and image ID in the same way as "Get key parameters and save"
   - If availability domain, subnet, or image ID cannot be queried, the script stops and asks for manual handling
   - If no SSH public key is found, the script automatically generates an instance login key pair in the data directory
@@ -142,6 +142,7 @@ Default data directory:
 │   └── oci_instance_key.pub
 ├── notification_config.conf
 ├── tasks/
+├── beginner_defaults.json
 ├── update_instance_config.json
 ├── create_instance_config.json
 ├── create_instance_beginner.json

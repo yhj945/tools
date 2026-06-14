@@ -67,6 +67,7 @@ CREATE_SSH_PUBLIC_KEY_DEFAULT="${CREATE_SSH_PRIVATE_KEY_DEFAULT}.pub"
 UPDATE_INSTANCE_CONFIG="${DATA_DIR}/update_instance_config.json"
 CREATE_INSTANCE_CONFIG="${DATA_DIR}/create_instance_config.json"
 CREATE_INSTANCE_DRAFT_CONFIG="${DATA_DIR}/create_instance_config.draft.json"
+BEGINNER_DEFAULTS_CONFIG="${DATA_DIR}/beginner_defaults.json"
 RETRY_SCRIPT="${DATA_DIR}/retry_update.sh"
 TASK_DIR="${DATA_DIR}/tasks"
 NOTIFICATION_CONFIG_FILE="${DATA_DIR}/notification_config.conf"
@@ -128,6 +129,218 @@ sync_legacy_notification_config() {
         cp "$LEGACY_EMAIL_CONFIG_FILE" "$NOTIFICATION_CONFIG_FILE" 2>/dev/null || return 0
         chmod 600 "$NOTIFICATION_CONFIG_FILE" 2>/dev/null || true
     fi
+}
+
+is_valid_positive_decimal() {
+    [[ "$1" =~ ^[0-9]+([.][0-9]+)?$ ]] && awk "BEGIN { exit !($1 > 0) }" 2>/dev/null
+}
+
+is_valid_boot_volume_size() {
+    [[ "$1" =~ ^[0-9]+$ && "$1" -ge 1 && "$1" -le 32768 ]]
+}
+
+load_beginner_defaults() {
+    if [[ ! -f "$BEGINNER_DEFAULTS_CONFIG" ]] || ! jq empty "$BEGINNER_DEFAULTS_CONFIG" 2>/dev/null; then
+        return 0
+    fi
+
+    BEGINNER_UPDATE_OCPUS_DEFAULT="$(jq -r --arg default_value "$BEGINNER_UPDATE_OCPUS_DEFAULT" '.update.ocpus // $default_value' "$BEGINNER_DEFAULTS_CONFIG")"
+    BEGINNER_UPDATE_MEMORY_GB_DEFAULT="$(jq -r --arg default_value "$BEGINNER_UPDATE_MEMORY_GB_DEFAULT" '.update.memoryInGBs // $default_value' "$BEGINNER_DEFAULTS_CONFIG")"
+    BEGINNER_UPDATE_BOOT_VOLUME_GB_DEFAULT="$(jq -r --arg default_value "$BEGINNER_UPDATE_BOOT_VOLUME_GB_DEFAULT" '.update.bootVolumeSizeInGBs // $default_value' "$BEGINNER_DEFAULTS_CONFIG")"
+    BEGINNER_CREATE_IMAGE_OS_DEFAULT="$(jq -r --arg default_value "$BEGINNER_CREATE_IMAGE_OS_DEFAULT" '.create.imageOperatingSystem // $default_value' "$BEGINNER_DEFAULTS_CONFIG")"
+    BEGINNER_CREATE_IMAGE_OS_VERSION_DEFAULT="$(jq -r --arg default_value "$BEGINNER_CREATE_IMAGE_OS_VERSION_DEFAULT" '.create.imageOperatingSystemVersion // $default_value' "$BEGINNER_DEFAULTS_CONFIG")"
+    BEGINNER_CREATE_SHAPE_DEFAULT="$(jq -r --arg default_value "$BEGINNER_CREATE_SHAPE_DEFAULT" '.create.shape // $default_value' "$BEGINNER_DEFAULTS_CONFIG")"
+    BEGINNER_CREATE_OCPUS_DEFAULT="$(jq -r --arg default_value "$BEGINNER_CREATE_OCPUS_DEFAULT" '.create.ocpus // $default_value' "$BEGINNER_DEFAULTS_CONFIG")"
+    BEGINNER_CREATE_MEMORY_GB_DEFAULT="$(jq -r --arg default_value "$BEGINNER_CREATE_MEMORY_GB_DEFAULT" '.create.memoryInGBs // $default_value' "$BEGINNER_DEFAULTS_CONFIG")"
+    BEGINNER_CREATE_BOOT_VOLUME_GB_DEFAULT="$(jq -r --arg default_value "$BEGINNER_CREATE_BOOT_VOLUME_GB_DEFAULT" '.create.bootVolumeSizeInGBs // $default_value' "$BEGINNER_DEFAULTS_CONFIG")"
+    BEGINNER_CREATE_BOOT_VOLUME_VPUS_DEFAULT="$(jq -r --arg default_value "$BEGINNER_CREATE_BOOT_VOLUME_VPUS_DEFAULT" '.create.bootVolumeVpusPerGB // $default_value' "$BEGINNER_DEFAULTS_CONFIG")"
+}
+
+save_beginner_defaults() {
+    local update_ocpus="$1"
+    local update_memory="$2"
+    local update_boot_volume="$3"
+    local create_image_os="$4"
+    local create_image_os_version="$5"
+    local create_shape="$6"
+    local create_ocpus="$7"
+    local create_memory="$8"
+    local create_boot_volume="$9"
+    local create_boot_vpus="${10}"
+
+    mkdir -p "$DATA_DIR"
+
+    jq -n \
+        --argjson update_ocpus "$update_ocpus" \
+        --argjson update_memory "$update_memory" \
+        --argjson update_boot_volume "$update_boot_volume" \
+        --arg create_image_os "$create_image_os" \
+        --arg create_image_os_version "$create_image_os_version" \
+        --arg create_shape "$create_shape" \
+        --argjson create_ocpus "$create_ocpus" \
+        --argjson create_memory "$create_memory" \
+        --argjson create_boot_volume "$create_boot_volume" \
+        --argjson create_boot_vpus "$create_boot_vpus" \
+        '{
+            update: {
+                ocpus: $update_ocpus,
+                memoryInGBs: $update_memory,
+                bootVolumeSizeInGBs: $update_boot_volume
+            },
+            create: {
+                imageOperatingSystem: $create_image_os,
+                imageOperatingSystemVersion: $create_image_os_version,
+                shape: $create_shape,
+                ocpus: $create_ocpus,
+                memoryInGBs: $create_memory,
+                bootVolumeSizeInGBs: $create_boot_volume,
+                bootVolumeVpusPerGB: $create_boot_vpus
+            }
+        }' > "$BEGINNER_DEFAULTS_CONFIG"
+    chmod 600 "$BEGINNER_DEFAULTS_CONFIG" 2>/dev/null || true
+}
+
+configure_beginner_defaults() {
+    local mode="${1:-all}"
+    local update_ocpus update_memory update_boot_volume
+    local create_image_os create_image_os_version create_shape create_ocpus create_memory create_boot_volume create_boot_vpus
+    local edit_update=false
+    local edit_create=false
+
+    load_beginner_defaults
+
+    update_ocpus="$BEGINNER_UPDATE_OCPUS_DEFAULT"
+    update_memory="$BEGINNER_UPDATE_MEMORY_GB_DEFAULT"
+    update_boot_volume="$BEGINNER_UPDATE_BOOT_VOLUME_GB_DEFAULT"
+    create_image_os="$BEGINNER_CREATE_IMAGE_OS_DEFAULT"
+    create_image_os_version="$BEGINNER_CREATE_IMAGE_OS_VERSION_DEFAULT"
+    create_shape="$BEGINNER_CREATE_SHAPE_DEFAULT"
+    create_ocpus="$BEGINNER_CREATE_OCPUS_DEFAULT"
+    create_memory="$BEGINNER_CREATE_MEMORY_GB_DEFAULT"
+    create_boot_volume="$BEGINNER_CREATE_BOOT_VOLUME_GB_DEFAULT"
+    create_boot_vpus="$BEGINNER_CREATE_BOOT_VOLUME_VPUS_DEFAULT"
+
+    case "$mode" in
+        update)
+            edit_update=true
+            ;;
+        create)
+            edit_create=true
+            ;;
+        *)
+            edit_update=true
+            edit_create=true
+            ;;
+    esac
+
+    show_header
+    if [[ "$edit_update" == true && "$edit_create" == false ]]; then
+        echo -e "${BOLD}修改一键修改实例配置默认值${NC}"
+    elif [[ "$edit_create" == true && "$edit_update" == false ]]; then
+        echo -e "${BOLD}修改一键创建实例默认值${NC}"
+    else
+        echo -e "${BOLD}修改一键默认配置${NC}"
+    fi
+    echo "========================================"
+    echo ""
+    echo "当前默认值:"
+    echo "  一键修改: ${BEGINNER_UPDATE_OCPUS_DEFAULT} OCPU / ${BEGINNER_UPDATE_MEMORY_GB_DEFAULT} GB / ${BEGINNER_UPDATE_BOOT_VOLUME_GB_DEFAULT} GB 启动盘"
+    echo "  一键创建: ${BEGINNER_CREATE_SHAPE_DEFAULT} / ${BEGINNER_CREATE_OCPUS_DEFAULT} OCPU / ${BEGINNER_CREATE_MEMORY_GB_DEFAULT} GB / ${BEGINNER_CREATE_BOOT_VOLUME_GB_DEFAULT} GB 启动盘"
+    echo ""
+
+    if [[ "$edit_update" == true ]]; then
+        echo -e "${YELLOW}一键修改实例配置默认值:${NC}"
+        read -p "目标 OCPU [默认: ${BEGINNER_UPDATE_OCPUS_DEFAULT}]: " update_ocpus
+        update_ocpus="${update_ocpus:-$BEGINNER_UPDATE_OCPUS_DEFAULT}"
+        read -p "目标内存 GB [默认: ${BEGINNER_UPDATE_MEMORY_GB_DEFAULT}]: " update_memory
+        update_memory="${update_memory:-$BEGINNER_UPDATE_MEMORY_GB_DEFAULT}"
+        read -p "目标启动盘 GB [默认: ${BEGINNER_UPDATE_BOOT_VOLUME_GB_DEFAULT}]: " update_boot_volume
+        update_boot_volume="${update_boot_volume:-$BEGINNER_UPDATE_BOOT_VOLUME_GB_DEFAULT}"
+        echo ""
+
+        if ! is_valid_positive_decimal "$update_ocpus" || ! is_valid_positive_decimal "$update_memory"; then
+            log_error "一键修改的 OCPU 和内存必须为大于 0 的数字"
+            pause
+            return 1
+        fi
+        if ! is_valid_boot_volume_size "$update_boot_volume"; then
+            log_error "一键修改的启动盘大小必须为 1-32768 的整数"
+            pause
+            return 1
+        fi
+    fi
+
+    if [[ "$edit_create" == true ]]; then
+        echo -e "${YELLOW}一键创建实例默认值:${NC}"
+        read -p "镜像系统 [默认: ${BEGINNER_CREATE_IMAGE_OS_DEFAULT}]: " create_image_os
+        create_image_os="${create_image_os:-$BEGINNER_CREATE_IMAGE_OS_DEFAULT}"
+        read -p "镜像版本 [默认: ${BEGINNER_CREATE_IMAGE_OS_VERSION_DEFAULT}]: " create_image_os_version
+        create_image_os_version="${create_image_os_version:-$BEGINNER_CREATE_IMAGE_OS_VERSION_DEFAULT}"
+        read -p "实例规格 [默认: ${BEGINNER_CREATE_SHAPE_DEFAULT}]: " create_shape
+        create_shape="${create_shape:-$BEGINNER_CREATE_SHAPE_DEFAULT}"
+        read -p "目标 OCPU [默认: ${BEGINNER_CREATE_OCPUS_DEFAULT}]: " create_ocpus
+        create_ocpus="${create_ocpus:-$BEGINNER_CREATE_OCPUS_DEFAULT}"
+        read -p "目标内存 GB [默认: ${BEGINNER_CREATE_MEMORY_GB_DEFAULT}]: " create_memory
+        create_memory="${create_memory:-$BEGINNER_CREATE_MEMORY_GB_DEFAULT}"
+        read -p "目标启动盘 GB [默认: ${BEGINNER_CREATE_BOOT_VOLUME_GB_DEFAULT}]: " create_boot_volume
+        create_boot_volume="${create_boot_volume:-$BEGINNER_CREATE_BOOT_VOLUME_GB_DEFAULT}"
+        read -p "启动盘性能 VPU/GB [默认: ${BEGINNER_CREATE_BOOT_VOLUME_VPUS_DEFAULT}]: " create_boot_vpus
+        create_boot_vpus="${create_boot_vpus:-$BEGINNER_CREATE_BOOT_VOLUME_VPUS_DEFAULT}"
+
+        if ! is_valid_positive_decimal "$create_ocpus" || ! is_valid_positive_decimal "$create_memory"; then
+            log_error "一键创建的 OCPU 和内存必须为大于 0 的数字"
+            pause
+            return 1
+        fi
+        if ! is_valid_boot_volume_size "$create_boot_volume"; then
+            log_error "一键创建的启动盘大小必须为 1-32768 的整数"
+            pause
+            return 1
+        fi
+        if [[ -z "$create_image_os" || -z "$create_shape" ]]; then
+            log_error "镜像系统和实例规格不能为空"
+            pause
+            return 1
+        fi
+        if [[ ! "$create_boot_vpus" =~ ^[0-9]+$ || "$create_boot_vpus" -lt 10 || "$create_boot_vpus" -gt 120 || $((create_boot_vpus % 10)) -ne 0 ]]; then
+            log_error "启动盘性能必须为 10-120 且为 10 的倍数"
+            pause
+            return 1
+        fi
+    fi
+
+    echo ""
+    echo "即将保存:"
+    [[ "$edit_update" == true ]] && echo "  一键修改: ${update_ocpus} OCPU / ${update_memory} GB / ${update_boot_volume} GB 启动盘"
+    if [[ "$edit_create" == true ]]; then
+        echo "  一键创建: ${create_shape} / ${create_ocpus} OCPU / ${create_memory} GB / ${create_boot_volume} GB 启动盘"
+        echo "  镜像:     ${create_image_os} ${create_image_os_version}"
+    fi
+    echo "  配置文件: $BEGINNER_DEFAULTS_CONFIG"
+    echo ""
+    read -p "确认保存默认配置? [Y/n]: " -r
+    [[ -z "$REPLY" ]] && REPLY="y"
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        log_info "操作已取消"
+        pause
+        return 0
+    fi
+
+    save_beginner_defaults \
+        "$update_ocpus" \
+        "$update_memory" \
+        "$update_boot_volume" \
+        "$create_image_os" \
+        "$create_image_os_version" \
+        "$create_shape" \
+        "$create_ocpus" \
+        "$create_memory" \
+        "$create_boot_volume" \
+        "$create_boot_vpus"
+
+    load_beginner_defaults
+    log_success "默认配置已保存"
+    pause
 }
 
 sync_legacy_oci_config() {
@@ -3452,10 +3665,12 @@ beginner_update_instance() {
     local instance_count="$1"
     local choice target_ocpus target_memory target_boot_volume request_interval selected_ocid
 
+    load_beginner_defaults
+
     echo ""
     echo -e "${BOLD}一键修改实例配置${NC}"
     echo "----------------------------------------"
-    echo "默认会修改为:"
+    echo "默认配置:"
     echo "  OCPU:       ${BEGINNER_UPDATE_OCPUS_DEFAULT}"
     echo "  内存:       ${BEGINNER_UPDATE_MEMORY_GB_DEFAULT} GB"
     echo "  启动盘:     ${BEGINNER_UPDATE_BOOT_VOLUME_GB_DEFAULT} GB"
@@ -3475,6 +3690,7 @@ beginner_update_instance() {
     target_memory="${target_memory:-$BEGINNER_UPDATE_MEMORY_GB_DEFAULT}"
     read -p "目标启动盘 GB [默认: ${BEGINNER_UPDATE_BOOT_VOLUME_GB_DEFAULT}]: " target_boot_volume
     target_boot_volume="${target_boot_volume:-$BEGINNER_UPDATE_BOOT_VOLUME_GB_DEFAULT}"
+
     read -p "后台请求间隔秒 [默认: ${OCI_UPDATE_REQUEST_INTERVAL_DEFAULT}]: " request_interval
     request_interval="${request_interval:-$OCI_UPDATE_REQUEST_INTERVAL_DEFAULT}"
 
@@ -5967,26 +6183,27 @@ prepare_beginner_create_config() {
     local config_file="$1"
     local source_config="$2"
 
+    load_beginner_defaults
     load_create_instance_defaults "$source_config"
 
     local compartment_id availability_domain subnet_id image_os image_os_version shape ocpus memory_gbs
     local boot_volume_size boot_volume_vpus_per_gb ssh_public_key display_name assign_public_ip retry_interval image_id
 
     compartment_id="$CREATE_COMPARTMENT_ID"
-    image_os="$CREATE_IMAGE_OS"
-    image_os_version="$CREATE_IMAGE_OS_VERSION"
+    image_os="$BEGINNER_CREATE_IMAGE_OS_DEFAULT"
+    image_os_version="$BEGINNER_CREATE_IMAGE_OS_VERSION_DEFAULT"
     [[ -z "$image_os" || "$image_os" == "null" ]] && image_os="$BEGINNER_CREATE_IMAGE_OS_DEFAULT"
     [[ -z "$image_os_version" || "$image_os_version" == "null" ]] && image_os_version="$BEGINNER_CREATE_IMAGE_OS_VERSION_DEFAULT"
-    shape="$CREATE_SHAPE"
+    shape="$BEGINNER_CREATE_SHAPE_DEFAULT"
     [[ -z "$shape" || "$shape" == "null" ]] && shape="$BEGINNER_CREATE_SHAPE_DEFAULT"
-    ocpus="$CREATE_OCPUS"
-    memory_gbs="$CREATE_MEMORY_GB"
-    boot_volume_size="$CREATE_BOOT_VOLUME_SIZE"
+    ocpus="$BEGINNER_CREATE_OCPUS_DEFAULT"
+    memory_gbs="$BEGINNER_CREATE_MEMORY_GB_DEFAULT"
+    boot_volume_size="$BEGINNER_CREATE_BOOT_VOLUME_GB_DEFAULT"
     if [[ "$boot_volume_size" == "150" ]]; then
         log_info "检测到旧的一键创建默认启动盘 150 GB，已自动改为 ${BEGINNER_CREATE_BOOT_VOLUME_GB_DEFAULT} GB"
         boot_volume_size="$BEGINNER_CREATE_BOOT_VOLUME_GB_DEFAULT"
     fi
-    boot_volume_vpus_per_gb="$CREATE_BOOT_VOLUME_VPUS_PER_GB"
+    boot_volume_vpus_per_gb="$BEGINNER_CREATE_BOOT_VOLUME_VPUS_DEFAULT"
     ssh_public_key="$CREATE_SSH_PUBLIC_KEY"
     display_name="$CREATE_DISPLAY_NAME"
     assign_public_ip="$CREATE_ASSIGN_PUBLIC_IP"
@@ -6150,11 +6367,15 @@ manage_create_instance() {
             echo -e "${YELLOW}!${NC} 存在未完成草稿: $draft_display_name"
         fi
         echo ""
+        load_beginner_defaults
+        echo "一键创建默认配置: ${BEGINNER_CREATE_SHAPE_DEFAULT} / ${BEGINNER_CREATE_OCPUS_DEFAULT} OCPU / ${BEGINNER_CREATE_MEMORY_GB_DEFAULT} GB / ${BEGINNER_CREATE_BOOT_VOLUME_GB_DEFAULT} GB 启动盘"
+        echo ""
         echo "操作选项:"
         echo "  1) 一键创建实例"
         echo "  2) 获取关键参数并保存"
         echo "  3) 查看已保存配置"
         echo "  4) 使用已保存配置创建实例"
+        echo "  5) 修改一键创建实例默认值"
         echo "  0) 返回主菜单"
         echo ""
 
@@ -6165,6 +6386,7 @@ manage_create_instance() {
             2) configure_create_instance_params ;;
             3) show_saved_create_instance_config ;;
             4) create_instance_from_saved_config ;;
+            5) configure_beginner_defaults "create" ;;
             0) return 0 ;;
             *)
                 log_error "无效选项"
@@ -6280,13 +6502,15 @@ manage_instances() {
 
         # 内层循环：操作选项（不重新获取数据）
         while true; do
+            load_beginner_defaults
             echo "操作选项:"
-            echo "  1) 一键修改实例配置 (4 OCPU / 24 GB / 200 GB 启动盘)"
+            echo "  1) 一键修改实例配置 (${BEGINNER_UPDATE_OCPUS_DEFAULT} OCPU / ${BEGINNER_UPDATE_MEMORY_GB_DEFAULT} GB / ${BEGINNER_UPDATE_BOOT_VOLUME_GB_DEFAULT} GB 启动盘)"
             echo "  2) 查看实例完整配置    (JSON格式)"
             echo "  3) 输入配置参数更新    (交互式输入)"
             echo "  4) 使用配置文件更新    (JSON文件)"
             echo "  5) 停止实例"
             echo "  6) 启动实例"
+            echo "  7) 修改一键修改实例配置默认值"
             echo "  0) 返回主菜单"
             echo ""
 
@@ -6363,6 +6587,9 @@ manage_instances() {
                     else
                         log_invalid_list_choice "$choice" "$instance_count"
                     fi
+                    ;;
+                7)
+                    configure_beginner_defaults "update"
                     ;;
                 0)
                     return 0
