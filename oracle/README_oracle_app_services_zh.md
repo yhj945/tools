@@ -36,7 +36,7 @@ oracle/oracle_app_services.sh
 默认部署目录：
 
 ```text
-/opt/oracle-useful-services/
+/opt/oracle-services/
 ├── hugo/
 │   ├── .env
 │   ├── docker-compose.yml
@@ -152,7 +152,7 @@ http://127.0.0.1:8080/
 脚本会创建一个默认静态页面：
 
 ```text
-/opt/oracle-useful-services/hugo/public/index.html
+/opt/oracle-services/hugo/public/index.html
 ```
 
 你可以将 Hugo 生成的 `public/` 目录内容替换到该路径。
@@ -177,7 +177,7 @@ http://127.0.0.1:8081/
 数据目录：
 
 ```text
-/opt/oracle-useful-services/wordpress/data/
+/opt/oracle-services/wordpress/data/
 ```
 
 ### 部署 Halo
@@ -200,7 +200,7 @@ http://127.0.0.1:8082/
 数据目录：
 
 ```text
-/opt/oracle-useful-services/halo/data/
+/opt/oracle-services/halo/data/
 ```
 
 ### 部署 Typecho
@@ -223,7 +223,7 @@ http://127.0.0.1:8083/
 数据目录：
 
 ```text
-/opt/oracle-useful-services/typecho/data/
+/opt/oracle-services/typecho/data/
 ```
 
 ## 服务端口
@@ -342,7 +342,7 @@ sudo bash oracle_app_services.sh stop wordpress
 sudo bash oracle_app_services.sh uninstall wordpress
 ```
 
-默认部署目录位于 `/opt/oracle-useful-services`，且 `docker-compose.yml` 权限为 `600`，通常需要 root 权限读取和管理。如果你使用自有 `ORACLE_SERVICES_HOME` 且当前用户具备 Docker 权限，可以不加 `sudo`。
+默认部署目录位于 `/opt/oracle-services`，且 `docker-compose.yml` 权限为 `600`，通常需要 root 权限读取和管理。如果你使用自有 `ORACLE_SERVICES_HOME` 且当前用户具备 Docker 权限，可以不加 `sudo`。
 
 `verify` 会读取服务目录中的 `docker-compose.yml`，执行 `docker compose ps`，并在输出包含 `exited`、`dead`、`unhealthy` 或 `restarting` 时返回失败。
 
@@ -410,7 +410,7 @@ sudo ss -lntp
 修改对应服务目录下 `docker-compose.yml` 的 `ports` 映射后重新部署：
 
 ```bash
-cd /opt/oracle-useful-services/wordpress
+cd /opt/oracle-services/wordpress
 sudo docker compose up -d
 ```
 
@@ -425,7 +425,7 @@ bash oracle_app_services.sh logs halo
 示例：
 
 ```bash
-sudo tar -czf wordpress-backup.tar.gz /opt/oracle-useful-services/wordpress
+sudo tar -czf wordpress-backup.tar.gz /opt/oracle-services/wordpress
 ```
 
 ## 开源协议

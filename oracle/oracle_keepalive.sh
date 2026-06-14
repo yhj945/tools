@@ -31,6 +31,22 @@ CPU_PIDS=""
 MEMORY_LOOP_PID=""
 NETWORK_LOOP_PID=""
 
+RED=''
+GREEN=''
+YELLOW=''
+CYAN=''
+BOLD=''
+NC=''
+
+if [[ -t 1 ]]; then
+    RED=$'\033[0;31m'
+    GREEN=$'\033[0;32m'
+    YELLOW=$'\033[1;33m'
+    CYAN=$'\033[0;36m'
+    BOLD=$'\033[1m'
+    NC=$'\033[0m'
+fi
+
 log() {
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
 }
@@ -51,7 +67,7 @@ validate_keepalive_methods() {
         return 0
     fi
 
-    printf 'At least one keepalive method must be enabled.\n' >&2
+    printf '至少需要启用一种保活方式。\n' >&2
     return 1
 }
 
@@ -59,13 +75,13 @@ validate_network_url() {
     local url="$1"
 
     if [[ -z "$url" || "$url" == -* || "$url" =~ [[:cntrl:]] ]]; then
-        printf 'Unsafe network URL\n' >&2
+        printf '网络 URL 不安全。\n' >&2
         return 1
     fi
     case "$url" in
         http://*|https://*) return 0 ;;
         *)
-            printf 'Unsafe network URL\n' >&2
+            printf '网络 URL 不安全。\n' >&2
             return 1
             ;;
     esac
@@ -75,7 +91,7 @@ validate_network_urls() {
     local urls url
 
     if [[ "$KEEPALIVE_NETWORK_URLS" =~ [[:cntrl:]] ]]; then
-        printf 'Unsafe network URL\n' >&2
+        printf '网络 URL 不安全。\n' >&2
         return 1
     fi
     [[ "$KEEPALIVE_NETWORK_ENABLED" == "1" ]] || return 0
@@ -94,13 +110,13 @@ validate_network_rate_limit() {
         return 0
     fi
 
-    printf 'Unsafe network rate limit\n' >&2
+    printf '网络限速参数不安全。\n' >&2
     return 1
 }
 
 need_root() {
     if [[ "$(id -u 2>/dev/null || echo 1)" != "0" ]]; then
-        printf '请使用 root 运行此命令 / Please run this command as root\n' >&2
+        printf '请使用 root 运行此命令。\n' >&2
         exit 1
     fi
 }
@@ -146,12 +162,12 @@ validate_plain_path() {
     local path="$2"
 
     if [[ -z "$path" || "$path" != /* || "$path" == -* || "$path" =~ [[:space:]] ]]; then
-        printf 'Unsafe path for %s: %s\n' "$label" "$path" >&2
+        printf '%s 路径不安全：%s\n' "$label" "$path" >&2
         return 1
     fi
     case "$path" in
         *'*'*|*'?'*|*'['*|*']'*|*'%'*)
-            printf 'Unsafe path for %s: %s\n' "$label" "$path" >&2
+            printf '%s 路径不安全：%s\n' "$label" "$path" >&2
             return 1
             ;;
     esac
@@ -262,7 +278,7 @@ start_cpu_loop() {
         CPU_PIDS="$CPU_PIDS $!"
     fi
 
-    log "CPU keepalive started: cores=$cores target=${KEEPALIVE_CPU_TARGET_PERCENT}% pids=$CPU_PIDS"
+    log "CPU 保活已启动：核心数=$cores 目标=${KEEPALIVE_CPU_TARGET_PERCENT}% pids=$CPU_PIDS"
 }
 
 mem_total_kb() {
@@ -315,7 +331,7 @@ run_memory_once() {
     total="$(mem_total_kb || true)"
     available="$(mem_available_kb || true)"
     if ! is_uint "$total" || ! is_uint "$available" || (( total <= 0 )); then
-        log "Memory metrics unavailable; skip this cycle"
+        log "无法读取内存指标，本轮跳过"
         return 0
     fi
 
@@ -323,7 +339,7 @@ run_memory_once() {
     (( used >= 0 )) || used=0
     target=$((total * KEEPALIVE_MEMORY_TARGET_PERCENT / 100))
     if (( used >= target )); then
-        log "Memory already above target; used_kb=$used target_kb=$target"
+        log "内存使用率已达到目标：used_kb=$used target_kb=$target"
         return 0
     fi
 
@@ -338,7 +354,7 @@ run_memory_once() {
     fi
     (( need_mb <= cap_mb )) || need_mb=$cap_mb
 
-    log "Memory keepalive allocating ${need_mb}MB for ${KEEPALIVE_MEMORY_HOLD_SECONDS}s"
+    log "内存保活分配 ${need_mb}MB，保持 ${KEEPALIVE_MEMORY_HOLD_SECONDS}s"
     if command -v python3 >/dev/null 2>&1; then
         memory_pressure_python "$need_mb" &
     else
@@ -388,7 +404,7 @@ run_network_once() {
     trap cleanup_network INT TERM
 
     url="$(pick_network_url)"
-    log "Network keepalive downloading for ${KEEPALIVE_NETWORK_DURATION_SECONDS}s at ${KEEPALIVE_NETWORK_RATE_LIMIT}: $url"
+    log "网络保活下载 ${KEEPALIVE_NETWORK_DURATION_SECONDS}s，限速 ${KEEPALIVE_NETWORK_RATE_LIMIT}：$url"
     if command -v curl >/dev/null 2>&1; then
         curl -fsSL --connect-timeout 10 --max-time "$KEEPALIVE_NETWORK_DURATION_SECONDS" --limit-rate "$KEEPALIVE_NETWORK_RATE_LIMIT" -o /dev/null -- "$url" &
         net_pid=$!
@@ -404,7 +420,7 @@ run_network_once() {
         return 0
     fi
 
-    log "No curl or wget found; skip network keepalive"
+    log "未找到 curl 或 wget，跳过网络保活"
 }
 
 network_loop() {
@@ -417,14 +433,14 @@ network_loop() {
 
 remove_lock_dir_safely() {
     if [[ -L "$LOCK_DIR" ]]; then
-        log "Lock path is a symlink; refusing cleanup: $LOCK_DIR"
+        log "锁路径是符号链接，拒绝清理：$LOCK_DIR"
         return 1
     fi
     if [[ ! -d "$LOCK_DIR" ]]; then
         return 0
     fi
     if [[ -L "$LOCK_DIR/pid" ]]; then
-        log "Lock pid is a symlink; refusing cleanup: $LOCK_DIR/pid"
+        log "锁 pid 是符号链接，拒绝清理：$LOCK_DIR/pid"
         return 1
     fi
 
@@ -433,13 +449,13 @@ remove_lock_dir_safely() {
         return 0
     fi
 
-    log "Lock directory contains unexpected files; refusing recursive removal: $LOCK_DIR"
+    log "锁目录包含非预期文件，拒绝递归删除：$LOCK_DIR"
     return 1
 }
 
 acquire_lock() {
     if [[ -L "$LOCK_DIR" ]]; then
-        log "Lock path is a symlink; refusing to start: $LOCK_DIR"
+        log "锁路径是符号链接，拒绝启动：$LOCK_DIR"
         exit 1
     fi
     if mkdir "$LOCK_DIR" 2>/dev/null; then
@@ -447,14 +463,14 @@ acquire_lock() {
         return 0
     fi
     if [[ -L "$LOCK_DIR/pid" ]]; then
-        log "Lock pid is a symlink; refusing to start: $LOCK_DIR/pid"
+        log "锁 pid 是符号链接，拒绝启动：$LOCK_DIR/pid"
         exit 1
     fi
 
     local old_pid=""
     [[ -r "$LOCK_DIR/pid" ]] && old_pid="$(sed -n '1p' "$LOCK_DIR/pid" 2>/dev/null || true)"
     if is_uint "$old_pid" && kill -0 "$old_pid" 2>/dev/null; then
-        log "Already running with PID $old_pid"
+        log "已经在运行，PID=$old_pid"
         exit 0
     fi
 
@@ -550,7 +566,7 @@ render_service() {
 
     cat <<EOF
 [Unit]
-Description=Oracle low-interference keepalive daemon
+Description=Oracle 低干扰保活服务
 After=network-online.target
 Wants=network-online.target
 
@@ -578,9 +594,9 @@ install_service() {
     load_config
     normalize_config || return $?
     if [[ "${ORACLE_KEEPALIVE_DRY_RUN:-0}" == "1" ]]; then
-        printf '[DRY-RUN] Would write config: %s\n' "$CONFIG_FILE"
+        printf '[DRY-RUN] 将写入配置：%s\n' "$CONFIG_FILE"
         render_config
-        printf '[DRY-RUN] Would write systemd unit: %s\n' "$SERVICE_FILE"
+        printf '[DRY-RUN] 将写入 systemd unit：%s\n' "$SERVICE_FILE"
         render_service
         return 0
     fi
@@ -592,13 +608,13 @@ install_service() {
     render_service > "$SERVICE_FILE" || return $?
     systemctl daemon-reload || return $?
     systemctl enable --now "$SERVICE_NAME" || return $?
-    log "Installed and started $SERVICE_NAME"
+    log "已安装并启动 $SERVICE_NAME"
 }
 
 uninstall_service() {
     validate_install_paths || return $?
     if [[ "${ORACLE_KEEPALIVE_DRY_RUN:-0}" == "1" ]]; then
-        printf '[DRY-RUN] Would stop and remove %s\n' "$SERVICE_NAME"
+        printf '[DRY-RUN] 将停止并移除 %s\n' "$SERVICE_NAME"
         return 0
     fi
 
@@ -608,7 +624,7 @@ uninstall_service() {
     rm -f "$SERVICE_FILE" "$INSTALL_PATH"
     remove_lock_dir_safely || return $?
     systemctl daemon-reload 2>/dev/null || true
-    log "Uninstalled $SERVICE_NAME"
+    log "已卸载 $SERVICE_NAME"
 }
 
 status_service() {
@@ -616,7 +632,132 @@ status_service() {
 }
 
 logs_service() {
-    journalctl -u "$SERVICE_NAME" -f
+    local follow_choice
+
+    if [[ ! -f "$SERVICE_FILE" ]]; then
+        printf '保活 systemd 服务尚未安装：%s\n' "$SERVICE_NAME" >&2
+        printf '请先选择 [3] 安装/更新并启动 systemd 服务。\n' >&2
+        return 1
+    fi
+    if ! command -v journalctl >/dev/null 2>&1; then
+        printf '未找到 journalctl，无法查看 systemd 日志。\n' >&2
+        return 1
+    fi
+
+    printf '查看服务日志：%s\n' "$SERVICE_NAME"
+    printf '先显示最近 80 行日志；是否继续跟随实时日志？\n'
+    printf '进入实时日志后按 Ctrl+C 返回菜单。\n\n'
+    journalctl -u "$SERVICE_NAME" -n 80 --no-pager || return $?
+    printf '\n是否跟随实时日志？[y/N]：'
+    IFS= read -r follow_choice || return 0
+    case "$follow_choice" in
+        y|Y|yes|YES)
+            printf '正在跟随 %s 日志，按 Ctrl+C 返回菜单。\n' "$SERVICE_NAME"
+            journalctl -u "$SERVICE_NAME" -f
+            ;;
+    esac
+}
+
+stop_service() {
+    need_root
+    systemctl stop "$SERVICE_NAME"
+    log "已停止 $SERVICE_NAME"
+}
+
+restart_service() {
+    need_root
+    systemctl restart "$SERVICE_NAME"
+    log "已重启 $SERVICE_NAME"
+}
+
+lock_running_pid() {
+    local pid=""
+
+    if [[ -r "$LOCK_DIR/pid" && ! -L "$LOCK_DIR/pid" ]]; then
+        pid="$(sed -n '1p' "$LOCK_DIR/pid" 2>/dev/null || true)"
+        if is_uint "$pid" && kill -0 "$pid" 2>/dev/null; then
+            printf '%s\n' "$pid"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+systemd_service_state() {
+    command -v systemctl >/dev/null 2>&1 || {
+        printf '不可用\n'
+        return 1
+    }
+    systemctl is-active "$SERVICE_NAME" 2>/dev/null || true
+}
+
+keepalive_is_running() {
+    local state
+
+    if lock_running_pid >/dev/null 2>&1; then
+        return 0
+    fi
+    state="$(systemd_service_state)"
+    [[ "$state" == "active" ]]
+}
+
+enabled_methods_label() {
+    local methods=()
+
+    [[ "$KEEPALIVE_CPU_ENABLED" == "1" ]] && methods+=("CPU")
+    [[ "$KEEPALIVE_MEMORY_ENABLED" == "1" ]] && methods+=("内存")
+    [[ "$KEEPALIVE_NETWORK_ENABLED" == "1" ]] && methods+=("网络")
+    if (( ${#methods[@]} == 0 )); then
+        printf '无\n'
+    else
+        local IFS='、'
+        printf '%s\n' "${methods[*]}"
+    fi
+}
+
+show_header() {
+    printf '%s\n' "╔═══════════════════════════════════════════════════════════╗"
+    printf '%s\n' "║                 Oracle Always Free 保活工具              ║"
+    printf '%s\n' "╚═══════════════════════════════════════════════════════════╝"
+}
+
+show_menu_status() {
+    local config_state config_note methods state pid=""
+
+    load_config
+    if normalize_config >/dev/null 2>&1; then
+        config_state="${GREEN}✓${NC}"
+        if [[ -r "$CONFIG_FILE" ]]; then
+            config_note="已加载配置：$CONFIG_FILE"
+        else
+            config_note="使用脚本默认配置（尚未安装配置文件）"
+        fi
+        methods="$(enabled_methods_label)"
+    else
+        config_state="${YELLOW}!${NC}"
+        config_note="配置校验失败，请执行 [6] 查看详情"
+        methods="不可用"
+    fi
+
+    printf '%b %s\n' "$config_state" "$config_note"
+    printf '  配置启用方式：%s\n' "$methods"
+
+    if [[ -f "$SERVICE_FILE" ]]; then
+        state="$(systemd_service_state)"
+        case "$state" in
+            active) printf '%b systemd 服务已安装并正在运行\n' "${GREEN}✓${NC}" ;;
+            inactive|failed|activating|deactivating) printf '%b systemd 服务已安装，当前状态：%s\n' "${YELLOW}!${NC}" "$state" ;;
+            *) printf '%b systemd 服务已安装，状态未知或 systemctl 不可用\n' "${YELLOW}!${NC}" ;;
+        esac
+    else
+        printf '%b systemd 服务尚未安装\n' "${YELLOW}!${NC}"
+    fi
+
+    if pid="$(lock_running_pid 2>/dev/null)"; then
+        printf '%b 检测到保活进程正在运行，PID=%s\n' "${GREEN}✓${NC}" "$pid"
+    else
+        printf '%b 未检测到正在运行的保活进程\n' "${YELLOW}!${NC}"
+    fi
 }
 
 current_memory_percent() {
@@ -702,21 +843,21 @@ verify_cpu() {
     local current="${KEEPALIVE_VERIFY_CPU_PERCENT:-}"
 
     if [[ "$KEEPALIVE_CPU_ENABLED" != "1" ]]; then
-        printf 'CPU: SKIP\n'
+        printf 'CPU：跳过\n'
         return 0
     fi
     if ! is_uint "$current"; then
         current="$(current_cpu_percent || true)"
     fi
     if ! is_uint "$current"; then
-        printf 'CPU: FAIL current=unknown target=%s%%\n' "$KEEPALIVE_CPU_TARGET_PERCENT"
+        printf 'CPU：失败 当前=未知 目标=%s%%\n' "$KEEPALIVE_CPU_TARGET_PERCENT"
         return 1
     fi
     if (( current >= KEEPALIVE_CPU_TARGET_PERCENT )); then
-        printf 'CPU: PASS current=%s%% target=%s%%\n' "$current" "$KEEPALIVE_CPU_TARGET_PERCENT"
+        printf 'CPU：通过 当前=%s%% 目标=%s%%\n' "$current" "$KEEPALIVE_CPU_TARGET_PERCENT"
         return 0
     fi
-    printf 'CPU: FAIL current=%s%% target=%s%%\n' "$current" "$KEEPALIVE_CPU_TARGET_PERCENT"
+    printf 'CPU：失败 当前=%s%% 目标=%s%%\n' "$current" "$KEEPALIVE_CPU_TARGET_PERCENT"
     return 1
 }
 
@@ -724,21 +865,21 @@ verify_memory() {
     local current="${KEEPALIVE_VERIFY_MEMORY_PERCENT:-}"
 
     if [[ "$KEEPALIVE_MEMORY_ENABLED" != "1" ]]; then
-        printf 'Memory: SKIP\n'
+        printf '内存：跳过\n'
         return 0
     fi
     if ! is_uint "$current"; then
         current="$(current_memory_percent || true)"
     fi
     if ! is_uint "$current"; then
-        printf 'Memory: FAIL current=unknown target=%s%%\n' "$KEEPALIVE_MEMORY_TARGET_PERCENT"
+        printf '内存：失败 当前=未知 目标=%s%%\n' "$KEEPALIVE_MEMORY_TARGET_PERCENT"
         return 1
     fi
     if (( current >= KEEPALIVE_MEMORY_TARGET_PERCENT )); then
-        printf 'Memory: PASS current=%s%% target=%s%%\n' "$current" "$KEEPALIVE_MEMORY_TARGET_PERCENT"
+        printf '内存：通过 当前=%s%% 目标=%s%%\n' "$current" "$KEEPALIVE_MEMORY_TARGET_PERCENT"
         return 0
     fi
-    printf 'Memory: FAIL current=%s%% target=%s%%\n' "$current" "$KEEPALIVE_MEMORY_TARGET_PERCENT"
+    printf '内存：失败 当前=%s%% 目标=%s%%\n' "$current" "$KEEPALIVE_MEMORY_TARGET_PERCENT"
     return 1
 }
 
@@ -746,7 +887,7 @@ verify_network() {
     local url tmp_file rc
 
     if [[ "$KEEPALIVE_NETWORK_ENABLED" != "1" ]]; then
-        printf 'Network: SKIP\n'
+        printf '网络：跳过\n'
         return 0
     fi
     url="$(pick_network_url)"
@@ -760,18 +901,18 @@ verify_network() {
         rc=$?
     else
         rm -f "$tmp_file" 2>/dev/null || true
-        printf 'Network: FAIL curl/wget unavailable\n'
+        printf '网络：失败，curl/wget 不可用\n'
         return 1
     fi
 
     if [[ -s "$tmp_file" ]]; then
         rm -f "$tmp_file" 2>/dev/null || true
-        printf 'Network: PASS url=%s\n' "$url"
+        printf '网络：通过 url=%s\n' "$url"
         return 0
     fi
 
     rm -f "$tmp_file" 2>/dev/null || true
-    printf 'Network: FAIL url=%s rc=%s\n' "$url" "$rc"
+    printf '网络：失败 url=%s rc=%s\n' "$url" "$rc"
     return 1
 }
 
@@ -779,6 +920,13 @@ verify_keepalive() {
     load_config
     normalize_config || return $?
 
+    if ! keepalive_is_running; then
+        printf '未检测到正在运行的保活服务或前台保活进程。\n' >&2
+        printf '请先选择 [2] 前台试运行，或选择 [3] 安装并启动 systemd 服务。\n' >&2
+        return 1
+    fi
+
+    printf '已检测到保活进程正在运行，开始验证当前配置启用的方式：%s\n' "$(enabled_methods_label)"
     local rc=0
     verify_cpu || rc=1
     verify_memory || rc=1
@@ -789,63 +937,111 @@ verify_keepalive() {
 check_script() {
     load_config
     normalize_config || return $?
-    printf '%s\n' "oracle_keepalive.sh OK"
+    printf '%s\n' "oracle_keepalive.sh 检查通过"
+}
+
+show_config_summary() {
+    load_config
+    normalize_config || return $?
+
+    printf '配置文件：%s\n' "$CONFIG_FILE"
+    if [[ -r "$CONFIG_FILE" ]]; then
+        printf '配置来源：已安装配置文件\n'
+    else
+        printf '配置来源：脚本默认值\n'
+    fi
+    printf '启用方式：%s\n' "$(enabled_methods_label)"
+    printf 'CPU：启用=%s 目标=%s%% 周期=%ss\n' "$KEEPALIVE_CPU_ENABLED" "$KEEPALIVE_CPU_TARGET_PERCENT" "$KEEPALIVE_CPU_CYCLE_SECONDS"
+    printf '内存：启用=%s 目标=%s%% 单轮上限=%sMB 保持=%ss 休息=%ss\n' \
+        "$KEEPALIVE_MEMORY_ENABLED" "$KEEPALIVE_MEMORY_TARGET_PERCENT" "$KEEPALIVE_MEMORY_MAX_MB" \
+        "$KEEPALIVE_MEMORY_HOLD_SECONDS" "$KEEPALIVE_MEMORY_REST_SECONDS"
+    printf '网络：启用=%s 间隔=%ss 持续=%ss 限速=%s\n' \
+        "$KEEPALIVE_NETWORK_ENABLED" "$KEEPALIVE_NETWORK_INTERVAL_SECONDS" \
+        "$KEEPALIVE_NETWORK_DURATION_SECONDS" "$KEEPALIVE_NETWORK_RATE_LIMIT"
+}
+
+pause_menu() {
+    printf '按回车键返回菜单...'
+    IFS= read -r _ || true
+    printf '\n'
 }
 
 run_menu_action() {
     case "$1" in
-        1) run_daemon ;;
-        2) install_service ;;
-        3) uninstall_service ;;
-        4) status_service ;;
-        5) logs_service ;;
-        6) check_script ;;
+        1) show_menu_status; printf '\n'; show_config_summary ;;
+        2) run_daemon ;;
+        3) ( install_service ) ;;
+        4) ( restart_service ) ;;
+        5) ( stop_service ) ;;
+        6) logs_service ;;
         7) verify_keepalive ;;
+        8) show_config_summary; printf '\n'; check_script ;;
+        9) ( uninstall_service ) ;;
         h|help) usage ;;
-        *) printf 'Invalid menu choice: %s\n' "$1" >&2; return 1 ;;
+        *) printf '菜单选项无效：%s\n' "$1" >&2; return 1 ;;
     esac
 }
 
 interactive_menu() {
-    local choice
+    local choice rc
 
     while true; do
+        show_header
+        show_menu_status
+        printf '\n'
         cat <<'EOF'
-Oracle Keepalive Menu
-  1) Run keepalive daemon in foreground
-  2) Install and start systemd service
-  3) Uninstall systemd service
-  4) Show service status
-  5) Follow service logs
-  6) Check script configuration
-  7) Verify selected keepalive methods
-  h) Help
-  0) Exit
+请选择操作：
+  1) 查看状态和配置
+  2) 前台试运行保活进程
+  3) 安装/更新并启动 systemd 服务
+  4) 重启 systemd 服务
+  5) 停止 systemd 服务
+  6) 查看 systemd 服务日志
+  7) 验证正在运行的保活效果
+  8) 检查配置
+  9) 卸载 systemd 服务
+  h) 帮助
+  0) 退出
 EOF
-        printf 'Choose an action: '
+        printf '\n请输入选项：'
         IFS= read -r choice || return 0
         case "$choice" in
             0|q|quit|exit) return 0 ;;
-            *) run_menu_action "$choice" || return $? ;;
+            '')
+                continue
+                ;;
+            *)
+                run_menu_action "$choice"
+                rc=$?
+                if (( rc != 0 )); then
+                    printf '操作失败，退出码：%s\n' "$rc" >&2
+                fi
+                if (( rc == 0 )) && [[ "$choice" == "2" || "$choice" == "6" ]]; then
+                    continue
+                fi
+                pause_menu
+                ;;
         esac
     done
 }
 
 usage() {
     cat <<'EOF'
-Usage: oracle_keepalive.sh [command]
+用法：oracle_keepalive.sh [命令]
 
-Run without arguments to open the interactive menu.
+不带参数运行会打开交互式菜单。
 
-Commands:
-  run        Run keepalive daemon in foreground
-  install    Install and start systemd service
-  uninstall  Stop and remove systemd service
-  status     Show systemd service status
-  logs       Follow systemd logs
-  check      Validate script configuration defaults
-  verify     Verify selected keepalive methods
-  help       Show this help
+命令：
+  run        前台运行保活进程
+  install    安装并启动 systemd 服务
+  uninstall  停止并移除 systemd 服务
+  stop       停止 systemd 服务
+  restart    重启 systemd 服务
+  status     查看 systemd 服务状态
+  logs       查看 systemd 服务日志
+  check      检查脚本配置
+  verify     验证正在运行的保活效果
+  help       显示帮助
 EOF
 }
 
@@ -854,6 +1050,8 @@ case "${1:-menu}" in
     run) run_daemon ;;
     install) install_service ;;
     uninstall) uninstall_service ;;
+    stop) stop_service ;;
+    restart) restart_service ;;
     status) status_service ;;
     logs) logs_service ;;
     check) check_script ;;

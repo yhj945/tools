@@ -1,7 +1,7 @@
 #!/bin/bash
 set -u
 
-BASE_DIR="${ORACLE_SERVICES_HOME:-/opt/oracle-useful-services}"
+BASE_DIR="${ORACLE_SERVICES_HOME:-/opt/oracle-services}"
 DRY_RUN="${ORACLE_SERVICES_DRY_RUN:-0}"
 NGINX_CONF_DIR="${ORACLE_SERVICES_NGINX_CONF_DIR:-/etc/nginx/conf.d}"
 NGINX_SSL_DIR="${ORACLE_SERVICES_NGINX_SSL_DIR:-/etc/nginx/ssl}"
@@ -15,20 +15,36 @@ if [[ "${EUID:-1}" == "0" ]]; then
     export PATH
 fi
 
+RED=''
+GREEN=''
+YELLOW=''
+CYAN=''
+BOLD=''
+NC=''
+
+if [[ -t 1 ]]; then
+    RED=$'\033[0;31m'
+    GREEN=$'\033[0;32m'
+    YELLOW=$'\033[1;33m'
+    CYAN=$'\033[0;36m'
+    BOLD=$'\033[1m'
+    NC=$'\033[0m'
+fi
+
 log() {
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
 }
 
 need_root_for_base_dir() {
     if [[ "$BASE_DIR" == /opt/* && "$(id -u 2>/dev/null || echo 1)" != "0" ]]; then
-        printf '请使用 root 运行此命令 / Please run this command as root\n' >&2
+        printf '请使用 root 运行此命令。\n' >&2
         exit 1
     fi
 }
 
 need_root() {
     if [[ "$(id -u 2>/dev/null || echo 1)" != "0" ]]; then
-        printf '请使用 root 运行此命令 / Please run this command as root\n' >&2
+        printf '请使用 root 运行此命令。\n' >&2
         exit 1
     fi
 }
@@ -36,7 +52,7 @@ need_root() {
 validate_service() {
     case "${1:-}" in
         hugo|wordpress|halo|typecho) return 0 ;;
-        *) printf 'Unknown service: %s\n' "${1:-}" >&2; return 1 ;;
+        *) printf '未知服务：%s\n' "${1:-}" >&2; return 1 ;;
     esac
 }
 
@@ -54,7 +70,7 @@ is_safe_absolute_path() {
 
 validate_base_dir() {
     if ! is_safe_absolute_path "$BASE_DIR"; then
-        printf 'Unsafe ORACLE_SERVICES_HOME: %s\n' "$BASE_DIR" >&2
+        printf 'ORACLE_SERVICES_HOME 路径不安全：%s\n' "$BASE_DIR" >&2
         return 1
     fi
     return 0
@@ -64,15 +80,15 @@ validate_domain() {
     local domain="$1"
 
     if [[ -z "$domain" || ${#domain} -gt 253 || "$domain" =~ [^A-Za-z0-9.-] ]]; then
-        printf 'Invalid domain: %s\n' "$domain" >&2
+        printf '域名无效：%s\n' "$domain" >&2
         return 1
     fi
     if [[ "$domain" == .* || "$domain" == *. || "$domain" == *..* || "$domain" != *.* ]]; then
-        printf 'Invalid domain: %s\n' "$domain" >&2
+        printf '域名无效：%s\n' "$domain" >&2
         return 1
     fi
     if [[ "$domain" =~ (^|\.)- || "$domain" =~ -(\.|$) ]]; then
-        printf 'Invalid domain: %s\n' "$domain" >&2
+        printf '域名无效：%s\n' "$domain" >&2
         return 1
     fi
     return 0
@@ -197,7 +213,7 @@ random_password() {
         LC_ALL=C tr -dc 'a-f0-9' < /dev/urandom | head -c 32
         printf '\n'
     else
-        printf 'No secure random source available.\n' >&2
+        printf '没有可用的安全随机数来源。\n' >&2
         return 1
     fi
 }
@@ -230,13 +246,83 @@ load_or_create_password() {
 }
 
 list_services() {
-    cat <<'EOF'
-Available services:
-  hugo       Static Hugo site served by nginx
-  wordpress WordPress with MariaDB
-  halo       Halo blog with PostgreSQL
-  typecho    Typecho with MariaDB
-EOF
+    printf '支持的服务：\n\n'
+    printf '  1) %-10s %-18s %-24s %-16s %s\n' \
+        "hugo" "静态博客/页面" "nginx:alpine" "127.0.0.1:8080" "$(service_deploy_state hugo)"
+    printf '  2) %-10s %-18s %-24s %-16s %s\n' \
+        "wordpress" "WordPress 站点" "WordPress + MariaDB" "127.0.0.1:8081" "$(service_deploy_state wordpress)"
+    printf '  3) %-10s %-18s %-24s %-16s %s\n' \
+        "halo" "Halo 博客" "Halo + PostgreSQL" "127.0.0.1:8082" "$(service_deploy_state halo)"
+    printf '  4) %-10s %-18s %-24s %-16s %s\n' \
+        "typecho" "Typecho 博客" "Typecho + MariaDB" "127.0.0.1:8083" "$(service_deploy_state typecho)"
+    printf '\n'
+    printf '默认部署目录：%s\n' "$BASE_DIR"
+    printf '可通过 ORACLE_SERVICES_HOME 修改部署目录。\n'
+}
+
+service_display_name() {
+    case "$1" in
+        hugo) printf 'Hugo 静态博客\n' ;;
+        wordpress) printf 'WordPress\n' ;;
+        halo) printf 'Halo\n' ;;
+        typecho) printf 'Typecho\n' ;;
+        *) printf '%s\n' "$1" ;;
+    esac
+}
+
+service_deploy_state() {
+    local service="$1"
+    local dir="${BASE_DIR%/}/$service"
+
+    validate_service "$service" >/dev/null 2>&1 || {
+        printf '未知\n'
+        return 1
+    }
+    if [[ -f "$dir/docker-compose.yml" ]]; then
+        printf '已部署\n'
+    else
+        printf '未部署\n'
+    fi
+}
+
+show_header() {
+    printf '%s\n' "╔═══════════════════════════════════════════════════════════╗"
+    printf '%s\n' "║                 Oracle 应用服务部署工具                  ║"
+    printf '%s\n' "╚═══════════════════════════════════════════════════════════╝"
+}
+
+show_menu_status() {
+    local compose_status docker_status service state
+    local services=(hugo wordpress halo typecho)
+
+    if command -v docker >/dev/null 2>&1; then
+        docker_status="${GREEN}✓${NC} Docker 已安装"
+    else
+        docker_status="${YELLOW}!${NC} Docker 未安装"
+    fi
+    if compose_cmd >/dev/null 2>&1; then
+        compose_status="${GREEN}✓${NC} Docker Compose 可用"
+    else
+        compose_status="${YELLOW}!${NC} Docker Compose 不可用"
+    fi
+
+    printf '%b\n' "$docker_status"
+    printf '%b\n' "$compose_status"
+    if validate_base_dir >/dev/null 2>&1; then
+        printf '  部署目录：%s\n' "$BASE_DIR"
+    else
+        printf '  部署目录不安全：%s\n' "$BASE_DIR"
+    fi
+    printf '  默认证书模式：%s\n' "$CERT_MODE"
+    printf '\n服务部署状态：\n'
+    for service in "${services[@]}"; do
+        state="$(service_deploy_state "$service")"
+        if [[ "$state" == "已部署" ]]; then
+            printf '  %b %-10s %s\n' "${GREEN}✓${NC}" "$service" "$state"
+        else
+            printf '  %b %-10s %s\n' "${YELLOW}!${NC}" "$service" "$state"
+        fi
+    done
 }
 
 render_hugo_compose() {
@@ -395,7 +481,7 @@ validate_proxy_paths() {
 
     for path in "$NGINX_CONF_DIR" "$NGINX_SSL_DIR" "$ACME_HOME" "$ACME_SH"; do
         if ! is_safe_absolute_path "$path"; then
-            printf 'Unsafe proxy path: %s\n' "$path" >&2
+            printf '代理相关路径不安全：%s\n' "$path" >&2
             return 1
         fi
     done
@@ -405,7 +491,7 @@ validate_proxy_paths() {
 validate_certificate_mode() {
     case "$CERT_MODE" in
         cloudflare|standalone) return 0 ;;
-        *) printf 'Unknown certificate mode: %s\n' "$CERT_MODE" >&2; return 1 ;;
+        *) printf '未知证书模式：%s\n' "$CERT_MODE" >&2; return 1 ;;
     esac
 }
 
@@ -420,7 +506,7 @@ render_nginx_config() {
     map_var="${upstream}_connection_upgrade"
 
     cat <<EOF
-# Oracle app service reverse proxy for $service
+# Oracle 应用服务反向代理：$service
 upstream $upstream {
     server 127.0.0.1:$port;
     keepalive 32;
@@ -499,11 +585,11 @@ render_proxy_dry_run() {
         issue_command="$ACME_SH --issue --server letsencrypt --dns dns_cf -d $domain --keylength ec-256 --home $ACME_HOME"
     fi
 
-    printf '[DRY-RUN] Would write Nginx config: %s\n' "$conf_path"
+    printf '[DRY-RUN] 将写入 Nginx 配置：%s\n' "$conf_path"
     render_nginx_config "$service" "$domain" || return $?
     cat <<EOF
-[DRY-RUN] Certificate mode: $CERT_MODE
-[DRY-RUN] Would issue and install certificate with acme.sh:
+[DRY-RUN] 证书模式：$CERT_MODE
+[DRY-RUN] 将使用 acme.sh 签发并安装证书：
 $ACME_SH --set-default-ca --server letsencrypt --home $ACME_HOME
 mkdir -p $ssl_dir
 chmod 700 $ssl_dir
@@ -516,7 +602,7 @@ $issue_command
 EOF
     if [[ "$CERT_MODE" == "standalone" ]]; then
         printf 'systemctl start nginx\n'
-        printf '[DRY-RUN] Would write standalone renew wrapper: %s\n' "$script_path"
+        printf '[DRY-RUN] 将写入 standalone 续期脚本：%s\n' "$script_path"
         render_standalone_renew_script "$domain"
     fi
     cat <<EOF
@@ -526,7 +612,7 @@ $ACME_SH --install-cert -d $domain --ecc --home $ACME_HOME \\
   --reloadcmd "systemctl reload nginx"
 chmod 600 $ssl_dir/private.key
 chmod 644 $ssl_dir/fullchain.cer
-[DRY-RUN] Would add idempotent root crontab renew task:
+[DRY-RUN] 将添加幂等的 root crontab 续期任务：
 (crontab -l 2>/dev/null || true) > /tmp/oracle-services.cron
 cp -a /tmp/oracle-services.cron /tmp/oracle-services.cron.new
 grep -v 'ORACLE_APP_SERVICE_RENEW:$escaped_domain:' /tmp/oracle-services.cron.new > /tmp/oracle-services.cron.filtered
@@ -554,7 +640,7 @@ require_cloudflare_credentials() {
         fi
     fi
     if [[ -n "$missing" ]]; then
-        printf 'Missing Cloudflare DNS-01 credential environment variable(s): %s\n' "$missing" >&2
+        printf '缺少 Cloudflare DNS-01 凭据环境变量：%s\n' "$missing" >&2
         return 1
     fi
     return 0
@@ -573,7 +659,7 @@ ensure_nginx() {
     elif command -v yum >/dev/null 2>&1; then
         yum install -y nginx || return $?
     else
-        printf 'Nginx not found. Please install Nginx manually.\n' >&2
+        printf '未找到 Nginx，请先手动安装 Nginx。\n' >&2
         return 1
     fi
 }
@@ -619,17 +705,17 @@ validate_root_owned_path_chain() {
         current="${current}/${component}"
         if [[ -L "$current" ]]; then
             if ! is_root_owned "$parent" || is_group_or_other_writable "$parent"; then
-                printf 'Unsafe acme.sh parent directory: %s\n' "$current" >&2
+                printf 'acme.sh 父目录不安全：%s\n' "$current" >&2
                 return 1
             fi
             continue
         fi
         if [[ ! -d "$current" ]]; then
-            printf 'Unsafe acme.sh parent directory: %s\n' "$current" >&2
+            printf 'acme.sh 父目录不安全：%s\n' "$current" >&2
             return 1
         fi
         if ! is_root_owned "$current" || is_group_or_other_writable "$current"; then
-            printf 'Unsafe acme.sh parent directory: %s\n' "$current" >&2
+            printf 'acme.sh 父目录不安全：%s\n' "$current" >&2
             return 1
         fi
     done
@@ -637,7 +723,7 @@ validate_root_owned_path_chain() {
     resolved_dir="$(cd "$dir" 2>/dev/null && pwd -P)" || return 1
     while [[ -n "$resolved_dir" && "$resolved_dir" != "/" ]]; do
         if ! is_root_owned "$resolved_dir" || is_group_or_other_writable "$resolved_dir"; then
-            printf 'Unsafe acme.sh parent directory: %s\n' "$resolved_dir" >&2
+            printf 'acme.sh 父目录不安全：%s\n' "$resolved_dir" >&2
             return 1
         fi
         resolved_dir="$(dirname "$resolved_dir")"
@@ -649,15 +735,15 @@ validate_root_executable_path() {
     local path="$1"
 
     if [[ ! -f "$path" || ! -x "$path" || -L "$path" ]]; then
-        printf 'Unsafe acme.sh path: %s\n' "$path" >&2
+        printf 'acme.sh 路径不安全：%s\n' "$path" >&2
         return 1
     fi
     if ! is_root_owned "$path"; then
-        printf 'Unsafe acme.sh owner: %s\n' "$path" >&2
+        printf 'acme.sh 所有者不安全：%s\n' "$path" >&2
         return 1
     fi
     if is_group_or_other_writable "$path"; then
-        printf 'Unsafe acme.sh permissions: %s\n' "$path" >&2
+        printf 'acme.sh 权限不安全：%s\n' "$path" >&2
         return 1
     fi
     validate_root_owned_path_chain "$path" || return $?
@@ -666,11 +752,11 @@ validate_root_executable_path() {
 
 validate_acme_home_path() {
     if [[ ! -d "$ACME_HOME" || -L "$ACME_HOME" ]]; then
-        printf 'Unsafe acme.sh home: %s\n' "$ACME_HOME" >&2
+        printf 'acme.sh home 不安全：%s\n' "$ACME_HOME" >&2
         return 1
     fi
     if ! is_root_owned "$ACME_HOME" || is_group_or_other_writable "$ACME_HOME"; then
-        printf 'Unsafe acme.sh home: %s\n' "$ACME_HOME" >&2
+        printf 'acme.sh home 不安全：%s\n' "$ACME_HOME" >&2
         return 1
     fi
     validate_root_owned_path_chain "$ACME_HOME" || return $?
@@ -686,7 +772,7 @@ canonicalize_acme_paths() {
     ACME_HOME="$home_dir"
     ACME_SH="$script_dir/$script_name"
     if ! is_safe_absolute_path "$ACME_HOME" || ! is_safe_absolute_path "$ACME_SH"; then
-        printf 'Unsafe acme.sh path\n' >&2
+        printf 'acme.sh 路径不安全。\n' >&2
         return 1
     fi
     validate_acme_home_path || return $?
@@ -701,8 +787,8 @@ ensure_acme_sh() {
         return $?
     fi
 
-    printf 'acme.sh not found: %s\n' "$ACME_SH" >&2
-    printf 'Install acme.sh first, then rerun this command.\n' >&2
+    printf '未找到 acme.sh：%s\n' "$ACME_SH" >&2
+    printf '请先安装 acme.sh，然后重新执行此命令。\n' >&2
     return 1
 }
 
@@ -851,7 +937,7 @@ configure_proxy() {
     if [[ "$service" == "halo" ]]; then
         update_halo_external_url "$domain" || return $?
     fi
-    log "Configured HTTPS proxy for $service at https://$domain/"
+    log "已为 $service 配置 HTTPS 反向代理：https://$domain/"
 }
 
 ensure_hugo_public() {
@@ -865,12 +951,12 @@ ensure_hugo_public() {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Oracle Hugo Site</title>
+  <title>Oracle Hugo 站点</title>
 </head>
 <body>
   <main>
-    <h1>Oracle Hugo Site</h1>
-    <p>Replace this static page with your Hugo generated public directory.</p>
+    <h1>Oracle Hugo 站点</h1>
+    <p>请将 Hugo 生成的 public 目录内容替换到这里。</p>
   </main>
 </body>
 </html>
@@ -900,7 +986,7 @@ deploy_service() {
         if [[ -f "$dir/.env" ]] && grep -q '^ORACLE_SERVICE_PASSWORD=' "$dir/.env"; then
             compose_password="<redacted-existing-password>"
         fi
-        printf '[DRY-RUN] Would deploy %s under %s\n' "$service" "$dir"
+        printf '[DRY-RUN] 将在 %s 部署 %s\n' "$dir" "$service"
         render_compose "$service" "$compose_password" "$domain" || return $?
         if [[ -n "$domain" ]]; then
             validate_proxy_paths || return $?
@@ -918,7 +1004,7 @@ deploy_service() {
     chmod 600 "$dir/docker-compose.yml" || return $?
 
     cmd="$(compose_cmd)" || {
-        printf 'Docker Compose not found. Run install-docker first.\n' >&2
+        printf '未找到 Docker Compose，请先运行 install-docker。\n' >&2
         exit 1
     }
     (cd "$dir" && $cmd up -d)
@@ -926,7 +1012,7 @@ deploy_service() {
     if [[ $rc -ne 0 ]]; then
         return $rc
     fi
-    log "Deployed $service in $dir"
+    log "已部署 $service 到 $dir"
     if [[ -n "$domain" ]]; then
         configure_proxy "$service" "$domain" || return $?
     fi
@@ -934,13 +1020,13 @@ deploy_service() {
 
 install_docker() {
     if [[ "$DRY_RUN" == "1" ]]; then
-        printf '[DRY-RUN] Would install Docker using the detected package manager\n'
+        printf '[DRY-RUN] 将使用检测到的包管理器安装 Docker\n'
         return 0
     fi
 
     need_root
     if command -v docker >/dev/null 2>&1 && compose_cmd >/dev/null 2>&1; then
-        log "Docker and Docker Compose already installed"
+        log "Docker 和 Docker Compose 已安装"
         return 0
     fi
 
@@ -952,7 +1038,7 @@ install_docker() {
     elif command -v yum >/dev/null 2>&1; then
         yum install -y docker docker-compose-plugin || return $?
     else
-        printf 'Unsupported package manager. Please install Docker manually.\n' >&2
+        printf '不支持当前包管理器，请手动安装 Docker。\n' >&2
         exit 1
     fi
     systemctl enable --now docker 2>/dev/null || true
@@ -966,12 +1052,12 @@ service_action() {
     validate_service "$service" || exit $?
     dir="$(service_dir "$service")" || exit $?
     if [[ ! -d "$dir" ]]; then
-        printf 'Service is not deployed: %s\n' "$service" >&2
+        printf '服务尚未部署：%s\n' "$service" >&2
         exit 1
     fi
 
     cmd="$(compose_cmd)" || {
-        printf 'Docker Compose not found.\n' >&2
+        printf '未找到 Docker Compose。\n' >&2
         exit 1
     }
 
@@ -996,179 +1082,358 @@ verify_service() {
     validate_service "$service" || exit $?
     dir="$(service_dir "$service")" || exit $?
     if [[ ! -d "$dir" || ! -f "$dir/docker-compose.yml" ]]; then
-        printf 'Service is not deployed: %s\n' "$service" >&2
+        printf '服务尚未部署：%s\n' "$service" >&2
         exit 1
     fi
 
     cmd="$(compose_cmd)" || {
-        printf 'Docker Compose not found.\n' >&2
+        printf '未找到 Docker Compose。\n' >&2
         exit 1
     }
     output="$(cd "$dir" && $cmd ps 2>&1)" || {
         printf '%s\n' "$output" >&2
-        printf 'Service is not healthy: %s\n' "$service" >&2
+        printf '服务不健康：%s\n' "$service" >&2
         exit 1
     }
 
     if printf '%s\n' "$output" | grep -Eiq '(^|[[:space:]])(exited|dead|unhealthy|restarting)([[:space:]]|$)'; then
         printf '%s\n' "$output"
-        printf 'Service is not healthy: %s\n' "$service" >&2
+        printf '服务不健康：%s\n' "$service" >&2
         exit 1
     fi
     if ! printf '%s\n' "$output" | grep -Eiq '(running|up|healthy)'; then
         printf '%s\n' "$output"
-        printf 'Service is not healthy: %s\n' "$service" >&2
+        printf '服务不健康：%s\n' "$service" >&2
         exit 1
     fi
 
     printf '%s\n' "$output"
-    printf '%s verify OK\n' "$service"
+    printf '%s 验证通过\n' "$service"
 }
 
 check_script() {
     validate_certificate_mode || return $?
-    printf '%s\n' "oracle_app_services.sh OK"
+    printf '%s\n' "oracle_app_services.sh 检查通过"
+}
+
+check_environment() {
+    local rc=0
+
+    printf '环境检查：\n'
+    if command -v docker >/dev/null 2>&1; then
+        printf '  Docker：可用\n'
+    else
+        printf '  Docker：不可用，请选择“安装 Docker”。\n'
+        rc=1
+    fi
+    if compose_cmd >/dev/null 2>&1; then
+        printf '  Docker Compose：可用\n'
+    else
+        printf '  Docker Compose：不可用，请先安装 Docker Compose 插件。\n'
+        rc=1
+    fi
+    if command -v nginx >/dev/null 2>&1; then
+        printf '  Nginx：可用\n'
+    else
+        printf '  Nginx：未安装；只有配置 HTTPS 反向代理时才需要。\n'
+    fi
+    if [[ -x "$ACME_SH" ]]; then
+        printf '  acme.sh：可用（%s）\n' "$ACME_SH"
+    else
+        printf '  acme.sh：未检测到；只有配置 HTTPS 证书时才需要。\n'
+    fi
+    validate_base_dir || rc=1
+    validate_certificate_mode || rc=1
+    return $rc
 }
 
 MENU_VALUE=""
+MENU_CANCELLED=0
+MENU_RETURNED=0
+
+pause_menu() {
+    printf '按回车键返回菜单...'
+    IFS= read -r _ || true
+    printf '\n'
+}
 
 prompt_service_name() {
-    printf 'Service (hugo/wordpress/halo/typecho): '
-    IFS= read -r MENU_VALUE || return 1
-    validate_service "$MENU_VALUE" || return $?
+    local choice state
+
+    MENU_VALUE=""
+    MENU_CANCELLED=0
+    MENU_RETURNED=0
+    while true; do
+        printf '请选择服务：\n'
+        state="$(service_deploy_state hugo)"
+        printf '  1) hugo       - Hugo 静态博客（%s）\n' "$state"
+        state="$(service_deploy_state wordpress)"
+        printf '  2) wordpress  - WordPress 站点（%s）\n' "$state"
+        state="$(service_deploy_state halo)"
+        printf '  3) halo       - Halo 博客（%s）\n' "$state"
+        state="$(service_deploy_state typecho)"
+        printf '  4) typecho    - Typecho 博客（%s）\n' "$state"
+        printf '  0) 返回\n'
+        printf '请输入选项 [1-4]：'
+        IFS= read -r choice || return 1
+        case "$choice" in
+            1) MENU_VALUE="hugo"; return 0 ;;
+            2) MENU_VALUE="wordpress"; return 0 ;;
+            3) MENU_VALUE="halo"; return 0 ;;
+            4) MENU_VALUE="typecho"; return 0 ;;
+            0|q|quit|exit)
+                MENU_CANCELLED=1
+                MENU_RETURNED=1
+                return 1
+                ;;
+            '')
+                continue
+                ;;
+            *)
+                printf '服务选项无效：%s\n' "$choice" >&2
+                ;;
+        esac
+    done
 }
 
 prompt_required_domain() {
-    printf 'Domain (example.com): '
-    IFS= read -r MENU_VALUE || return 1
-    validate_domain "$MENU_VALUE" || return $?
+    MENU_VALUE=""
+    MENU_CANCELLED=0
+    MENU_RETURNED=0
+    while true; do
+        printf '域名（example.com，输入 0 返回）：'
+        IFS= read -r MENU_VALUE || return 1
+        case "$MENU_VALUE" in
+            0|q|quit|exit)
+                MENU_CANCELLED=1
+                MENU_RETURNED=1
+                return 1
+                ;;
+            '')
+                printf '域名不能为空。\n' >&2
+                ;;
+            *)
+                validate_domain "$MENU_VALUE" && return 0
+                ;;
+        esac
+    done
 }
 
 prompt_optional_domain() {
-    printf 'Domain (optional, press Enter to skip HTTPS): '
-    IFS= read -r MENU_VALUE || return 1
-    if [[ -n "$MENU_VALUE" ]]; then
-        validate_domain "$MENU_VALUE" || return $?
-    fi
+    MENU_VALUE=""
+    MENU_CANCELLED=0
+    MENU_RETURNED=0
+    while true; do
+        printf '域名（可选，直接回车跳过 HTTPS，输入 0 返回）：'
+        IFS= read -r MENU_VALUE || return 1
+        case "$MENU_VALUE" in
+            0|q|quit|exit)
+                MENU_CANCELLED=1
+                MENU_RETURNED=1
+                return 1
+                ;;
+            '')
+                return 0
+                ;;
+            *)
+                validate_domain "$MENU_VALUE" && return 0
+                ;;
+        esac
+    done
 }
 
 prompt_certificate_mode() {
     local choice
 
-    cat <<'EOF'
-Certificate mode:
-  1) Let's Encrypt + acme.sh + Cloudflare Token (recommended)
+    MENU_CANCELLED=0
+    MENU_RETURNED=0
+    while true; do
+        cat <<'EOF'
+证书模式：
+  1) Let's Encrypt + acme.sh + Cloudflare Token（推荐）
   2) Let's Encrypt standalone
+  0) 返回
 EOF
-    printf 'Choose certificate mode [1]: '
-    IFS= read -r choice || return 1
-    case "$choice" in
-        ''|1) CERT_MODE="cloudflare" ;;
-        2) CERT_MODE="standalone" ;;
-        *) printf 'Invalid certificate mode selection: %s\n' "$choice" >&2; return 1 ;;
-    esac
+        printf '请选择证书模式 [1]：'
+        IFS= read -r choice || return 1
+        case "$choice" in
+            ''|1) CERT_MODE="cloudflare"; return 0 ;;
+            2) CERT_MODE="standalone"; return 0 ;;
+            0|q|quit|exit)
+                MENU_CANCELLED=1
+                MENU_RETURNED=1
+                return 1
+                ;;
+            *)
+                printf '证书模式选项无效：%s\n' "$choice" >&2
+                ;;
+        esac
+    done
 }
 
 service_action_from_menu_choice() {
     case "$1" in
-        5) printf 'status\n' ;;
-        6) printf 'logs\n' ;;
-        7) printf 'stop\n' ;;
-        8) printf 'uninstall\n' ;;
+        1) printf 'status\n' ;;
+        2) printf 'logs\n' ;;
+        3) printf 'verify\n' ;;
+        4) printf 'stop\n' ;;
+        5) printf 'uninstall\n' ;;
         *) return 1 ;;
     esac
 }
 
+manage_service_menu() {
+    local service action choice rc
+
+    prompt_service_name || return 0
+    service="$MENU_VALUE"
+    if [[ "$(service_deploy_state "$service")" != "已部署" ]]; then
+        printf '服务尚未部署：%s。请先选择 [3] 部署/更新服务。\n' "$service"
+        pause_menu
+        return 0
+    fi
+
+    while true; do
+        printf '\n管理服务：%s（%s）\n' "$(service_display_name "$service")" "$(service_deploy_state "$service")"
+        cat <<'EOF'
+  1) 查看状态
+  2) 跟随日志
+  3) 验证健康
+  4) 停止服务
+  5) 卸载服务
+  0) 返回主菜单
+EOF
+        printf '请输入选项：'
+        IFS= read -r choice || return 0
+        case "$choice" in
+            0|q|quit|exit) return 0 ;;
+            '')
+                continue
+                ;;
+            1|2|3|4|5)
+                action="$(service_action_from_menu_choice "$choice")" || return 1
+                if [[ "$action" == "verify" ]]; then
+                    ( verify_service "$service" )
+                else
+                    ( service_action "$action" "$service" )
+                fi
+                rc=$?
+                if (( rc != 0 )); then
+                    printf '操作失败，退出码：%s\n' "$rc" >&2
+                fi
+                if (( rc == 0 )) && [[ "$action" == "logs" ]]; then
+                    continue
+                fi
+                pause_menu
+                ;;
+            *)
+                printf '菜单选项无效：%s\n' "$choice" >&2
+                ;;
+        esac
+    done
+}
+
 run_menu_action() {
     local choice="$1"
-    local service domain action
+    local service domain
 
+    MENU_RETURNED=0
     case "$choice" in
-        1) list_services ;;
-        2) install_docker ;;
+        1) ( check_environment ) ;;
+        2) list_services ;;
         3)
-            prompt_service_name || return $?
+            prompt_service_name || return 0
             service="$MENU_VALUE"
-            prompt_optional_domain || return $?
+            prompt_optional_domain || return 0
             domain="$MENU_VALUE"
             if [[ -n "$domain" ]]; then
-                prompt_certificate_mode || return $?
+                prompt_certificate_mode || return 0
             fi
-            deploy_service "$service" "$domain"
+            ( deploy_service "$service" "$domain" )
             ;;
         4)
-            prompt_service_name || return $?
+            manage_service_menu
+            ;;
+        5)
+            prompt_service_name || return 0
             service="$MENU_VALUE"
-            prompt_required_domain || return $?
+            prompt_required_domain || return 0
             domain="$MENU_VALUE"
-            prompt_certificate_mode || return $?
-            configure_proxy "$service" "$domain"
+            prompt_certificate_mode || return 0
+            ( configure_proxy "$service" "$domain" )
             ;;
-        5|6|7|8)
-            prompt_service_name || return $?
-            service="$MENU_VALUE"
-            action="$(service_action_from_menu_choice "$choice")" || return $?
-            service_action "$action" "$service"
-            ;;
-        9)
-            prompt_service_name || return $?
-            verify_service "$MENU_VALUE"
-            ;;
-        10) check_script ;;
+        6) ( install_docker ) ;;
+        7) ( check_script ) ;;
         h|help) usage ;;
-        *) printf 'Invalid menu choice: %s\n' "$choice" >&2; return 1 ;;
+        *) printf '菜单选项无效：%s\n' "$choice" >&2; return 1 ;;
     esac
 }
 
 interactive_menu() {
-    local choice
+    local choice rc
 
     while true; do
+        show_header
+        show_menu_status
+        printf '\n'
         cat <<'EOF'
-Oracle App Services Menu
-  1) List supported services
-  2) Install Docker
-  3) Deploy service
-  4) Configure HTTPS proxy
-  5) Service status
-  6) Follow service logs
-  7) Stop service
-  8) Uninstall service
-  9) Verify service
-  10) Check script
-  h) Help
-  0) Exit
+请选择操作：
+  1) 检查运行环境
+  2) 列出支持的服务
+  3) 部署/更新服务
+  4) 管理已部署服务
+  5) 配置 HTTPS 反向代理
+  6) 安装 Docker
+  7) 检查脚本
+  h) 帮助
+  0) 退出
 EOF
-        printf 'Choose an action: '
+        printf '\n请输入选项：'
         IFS= read -r choice || return 0
         case "$choice" in
             0|q|quit|exit) return 0 ;;
-            *) run_menu_action "$choice" || return $? ;;
+            '')
+                continue
+                ;;
+            *)
+                run_menu_action "$choice"
+                rc=$?
+                if (( rc != 0 )); then
+                    printf '操作失败，退出码：%s\n' "$rc" >&2
+                fi
+                if (( MENU_RETURNED == 1 )); then
+                    continue
+                fi
+                if [[ "$choice" != "4" ]]; then
+                    pause_menu
+                fi
+                ;;
         esac
     done
 }
 
 usage() {
     cat <<'EOF'
-Usage: oracle_app_services.sh [command] [service] [domain]
+用法：oracle_app_services.sh [命令] [服务] [域名]
 
-Run without arguments to open the interactive menu.
+不带参数运行会打开交互式菜单。
 
-Commands:
-  list                    List supported services
-  install-docker          Install Docker and Docker Compose plugin
-  deploy <service> [domain] Deploy hugo, wordpress, halo, or typecho; optionally configure HTTPS proxy
-  proxy <service> <domain>  Configure Nginx reverse proxy, Let's Encrypt certificate, and renewal
-  status <service>        Show Docker Compose status
-  logs <service>          Follow Docker Compose logs
-  stop <service>          Stop a service
-  uninstall <service>     Stop and remove a service project
-  verify <service>        Verify Docker Compose service health
-  check                   Validate script
-  help                    Show this help
+命令：
+  list                    列出支持的服务
+  install-docker          安装 Docker 和 Docker Compose 插件
+  deploy <服务> [域名]    部署 hugo、wordpress、halo 或 typecho；可选配置 HTTPS 反向代理
+  proxy <服务> <域名>     配置 Nginx 反向代理、Let's Encrypt 证书和续期
+  status <服务>           查看 Docker Compose 状态
+  logs <服务>             跟随查看 Docker Compose 日志
+  stop <服务>             停止服务
+  uninstall <服务>        停止并删除服务项目
+  verify <服务>           验证 Docker Compose 服务健康状态
+  check                   检查脚本
+  env                     检查运行环境
+  help                    显示帮助
 
-Certificate modes:
-  ORACLE_SERVICES_CERT_MODE=cloudflare   Let's Encrypt + acme.sh + Cloudflare Token (recommended)
+证书模式：
+  ORACLE_SERVICES_CERT_MODE=cloudflare   Let's Encrypt + acme.sh + Cloudflare Token（推荐）
   ORACLE_SERVICES_CERT_MODE=standalone   Let's Encrypt standalone
 EOF
 }
@@ -1182,6 +1447,7 @@ case "${1:-menu}" in
     status|logs|stop|uninstall) service_action "$1" "${2:-}" ;;
     verify) verify_service "${2:-}" ;;
     check) check_script ;;
+    env) check_environment ;;
     help|-h|--help) usage ;;
     *) usage; exit 1 ;;
 esac
