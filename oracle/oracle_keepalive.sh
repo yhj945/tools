@@ -7,6 +7,7 @@ SERVICE_FILE="${ORACLE_KEEPALIVE_SERVICE_FILE:-/etc/systemd/system/oracle-keepal
 SERVICE_NAME="oracle-keepalive.service"
 LOCK_DIR="${ORACLE_KEEPALIVE_LOCK_DIR:-/run/oracle-keepalive.lock}"
 SAFE_ROOT_PATH="/usr/sbin:/usr/bin:/sbin:/bin"
+PROJECT_URL="https://github.com/yhj945/tools"
 
 if [[ "${EUID:-1}" == "0" ]]; then
     PATH="$SAFE_ROOT_PATH"
@@ -702,7 +703,7 @@ keepalive_is_running() {
 }
 
 enabled_methods_label() {
-    local methods=()
+    local methods=() method label="" separator=""
 
     [[ "$KEEPALIVE_CPU_ENABLED" == "1" ]] && methods+=("CPU")
     [[ "$KEEPALIVE_MEMORY_ENABLED" == "1" ]] && methods+=("内存")
@@ -710,15 +711,26 @@ enabled_methods_label() {
     if (( ${#methods[@]} == 0 )); then
         printf '无\n'
     else
-        local IFS='、'
-        printf '%s\n' "${methods[*]}"
+        for method in "${methods[@]}"; do
+            label="${label}${separator}${method}"
+            separator="、"
+        done
+        printf '%s\n' "$label"
     fi
 }
 
 show_header() {
-    printf '%s\n' "╔═══════════════════════════════════════════════════════════╗"
-    printf '%s\n' "║                 Oracle Always Free 保活工具              ║"
-    printf '%s\n' "╚═══════════════════════════════════════════════════════════╝"
+    printf '\n'
+    printf '%b\n' "${CYAN}[ Oracle Always Free 保活工具 ]${NC}"
+    printf '%b\n' "${CYAN}GitHub: ${PROJECT_URL}${NC}"
+    printf '\n'
+}
+
+show_section() {
+    printf '\n'
+    printf '%b\n' "${BOLD}========================================${NC}"
+    printf '%b\n' "${BOLD}$1${NC}"
+    printf '%b\n' "${BOLD}========================================${NC}"
 }
 
 show_menu_status() {
@@ -961,23 +973,23 @@ show_config_summary() {
 }
 
 pause_menu() {
-    printf '按回车键返回菜单...'
+    printf '\n按回车键继续...'
     IFS= read -r _ || true
     printf '\n'
 }
 
 run_menu_action() {
     case "$1" in
-        1) show_menu_status; printf '\n'; show_config_summary ;;
-        2) run_daemon ;;
-        3) ( install_service ) ;;
-        4) ( restart_service ) ;;
-        5) ( stop_service ) ;;
-        6) logs_service ;;
-        7) verify_keepalive ;;
-        8) show_config_summary; printf '\n'; check_script ;;
-        9) ( uninstall_service ) ;;
-        h|help) usage ;;
+        1) show_section "查看状态和配置"; show_menu_status; printf '\n'; show_config_summary ;;
+        2) show_section "前台试运行保活进程"; run_daemon ;;
+        3) show_section "安装/更新并启动 systemd 服务"; ( install_service ) ;;
+        4) show_section "重启 systemd 服务"; ( restart_service ) ;;
+        5) show_section "停止 systemd 服务"; ( stop_service ) ;;
+        6) show_section "查看 systemd 服务日志"; logs_service ;;
+        7) show_section "验证正在运行的保活效果"; verify_keepalive ;;
+        8) show_section "检查配置"; show_config_summary; printf '\n'; check_script ;;
+        9) show_section "卸载 systemd 服务"; ( uninstall_service ) ;;
+        h|help) show_section "帮助"; usage ;;
         *) printf '菜单选项无效：%s\n' "$1" >&2; return 1 ;;
     esac
 }
@@ -1001,12 +1013,20 @@ interactive_menu() {
   8) 检查配置
   9) 卸载 systemd 服务
   h) 帮助
+
   0) 退出
 EOF
-        printf '\n请输入选项：'
-        IFS= read -r choice || return 0
+        printf '\n========================================\n'
+        printf '请输入选项：'
+        if ! IFS= read -r choice; then
+            printf '%b\n' "${GREEN}感谢使用，再见！${NC}"
+            return 0
+        fi
         case "$choice" in
-            0|q|quit|exit) return 0 ;;
+            0|q|quit|exit)
+                printf '%b\n' "${GREEN}感谢使用，再见！${NC}"
+                return 0
+                ;;
             '')
                 continue
                 ;;
