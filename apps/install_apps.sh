@@ -11,6 +11,7 @@ ACME_SH="${APPS_ACME_SH:-$ACME_HOME/acme.sh}"
 CERT_MODE="${APPS_CERT_MODE:-cloudflare}"
 SAFE_ROOT_PATH="/usr/sbin:/usr/bin:/sbin:/bin"
 PROJECT_URL="https://github.com/yhj945/tools"
+TOOL_VERSION="v1.0.0"
 
 if [[ "${EUID:-1}" == "0" ]]; then
     PATH="$SAFE_ROOT_PATH"
@@ -435,9 +436,21 @@ service_deploy_state() {
 
 show_header() {
     printf '\n'
-    printf '%b\n' "${CYAN}[ 应用安装工具 ]${NC}"
-    printf '%b\n' "${CYAN}GitHub: ${PROJECT_URL}${NC}"
-    printf '\n'
+    printf '%b' "$CYAN"
+    cat <<'EOF'
+ ___           _        _ _      _
+|_ _|_ __  ___| |_ __ _| | |    / \   _ __  _ __  ___
+ | || '_ \/ __| __/ _` | | |   / _ \ | '_ \| '_ \/ __|
+ | || | | \__ \ || (_| | | |  / ___ \| |_) | |_) \__ \
+|___|_| |_|___/\__\__,_|_|_| /_/   \_\ .__/| .__/|___/
+                                     |_|   |_|
+EOF
+    printf '%b' "$NC"
+    printf '%b\n' "${GREEN}Docker Compose 应用安装、反向代理与证书配置工具${NC}"
+    printf 'GitHub: %s  Version: %s  Script: apps/install_apps.sh\n' "$PROJECT_URL" "$TOOL_VERSION"
+    printf '%b\n' "${BOLD}------------------------------------------------------------${NC}"
+    printf '%b\n' "${BOLD}[ 应用安装工具 控制台 ]${NC}"
+    printf '%b\n\n' "${BOLD}------------------------------------------------------------${NC}"
 }
 
 show_section() {

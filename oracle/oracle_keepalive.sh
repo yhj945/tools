@@ -8,6 +8,7 @@ SERVICE_NAME="oracle-keepalive.service"
 LOCK_DIR="${ORACLE_KEEPALIVE_LOCK_DIR:-/run/oracle-keepalive.lock}"
 SAFE_ROOT_PATH="/usr/sbin:/usr/bin:/sbin:/bin"
 PROJECT_URL="https://github.com/yhj945/tools"
+TOOL_VERSION="v1.0.0"
 
 if [[ "${EUID:-1}" == "0" ]]; then
     PATH="$SAFE_ROOT_PATH"
@@ -721,9 +722,21 @@ enabled_methods_label() {
 
 show_header() {
     printf '\n'
-    printf '%b\n' "${CYAN}[ Oracle Always Free 保活工具 ]${NC}"
-    printf '%b\n' "${CYAN}GitHub: ${PROJECT_URL}${NC}"
-    printf '\n'
+    printf '%b' "$CYAN"
+    cat <<'EOF'
+  ___                 _        _  __                 _      _    _ _
+ / _ \ _ __ __ _  ___| | ___  | |/ /___  ___ _ __   / \    | |  (_) |_   _____
+| | | | '__/ _` |/ __| |/ _ \ | ' // _ \/ _ \ '_ \ / _ \   | |  | | \ \ / / _ \
+| |_| | | | (_| | (__| |  __/ | . \  __/  __/ |_) / ___ \  | |__| | |\ V /  __/
+ \___/|_|  \__,_|\___|_|\___| |_|\_\___|\___| .__/_/   \_\ |____|_|_| \_/ \___|
+                                            |_|
+EOF
+    printf '%b' "$NC"
+    printf '%b\n' "${GREEN}Oracle Always Free 低干扰保活与 systemd 管理工具${NC}"
+    printf 'GitHub: %s  Version: %s  Script: oracle/oracle_keepalive.sh\n' "$PROJECT_URL" "$TOOL_VERSION"
+    printf '%b\n' "${BOLD}------------------------------------------------------------${NC}"
+    printf '%b\n' "${BOLD}[ Oracle Always Free 保活工具 控制台 ]${NC}"
+    printf '%b\n\n' "${BOLD}------------------------------------------------------------${NC}"
 }
 
 show_section() {

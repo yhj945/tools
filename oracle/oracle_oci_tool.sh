@@ -8,6 +8,7 @@
 # ================================
 INSTANCE_OCIDS=()  # 实例 OCID 数组
 PROJECT_URL="https://github.com/yhj945/tools"
+TOOL_VERSION="v1.0"
 
 # ================================
 # 颜色定义
@@ -236,28 +237,28 @@ configure_beginner_defaults() {
 
     show_header
     if [[ "$edit_update" == true && "$edit_create" == false ]]; then
-        echo -e "${BOLD}修改一键修改实例配置默认值${NC}"
+        printf '%b\n' "${BOLD}修改一键修改实例配置默认值${NC}"
     elif [[ "$edit_create" == true && "$edit_update" == false ]]; then
-        echo -e "${BOLD}修改一键创建实例默认值${NC}"
+        printf '%b\n' "${BOLD}修改一键创建实例默认值${NC}"
     else
-        echo -e "${BOLD}修改一键默认配置${NC}"
+        printf '%b\n' "${BOLD}修改一键默认配置${NC}"
     fi
-    echo "========================================"
-    echo ""
-    echo "当前默认值:"
-    echo "  一键修改: ${BEGINNER_UPDATE_OCPUS_DEFAULT} OCPU / ${BEGINNER_UPDATE_MEMORY_GB_DEFAULT} GB / ${BEGINNER_UPDATE_BOOT_VOLUME_GB_DEFAULT} GB 启动盘"
-    echo "  一键创建: ${BEGINNER_CREATE_SHAPE_DEFAULT} / ${BEGINNER_CREATE_OCPUS_DEFAULT} OCPU / ${BEGINNER_CREATE_MEMORY_GB_DEFAULT} GB / ${BEGINNER_CREATE_BOOT_VOLUME_GB_DEFAULT} GB 启动盘"
-    echo ""
+    printf '%s\n' "========================================"
+    printf '%s\n' ""
+    printf '%s\n' "当前默认值:"
+    printf '%s\n' "  一键修改: ${BEGINNER_UPDATE_OCPUS_DEFAULT} OCPU / ${BEGINNER_UPDATE_MEMORY_GB_DEFAULT} GB / ${BEGINNER_UPDATE_BOOT_VOLUME_GB_DEFAULT} GB 启动盘"
+    printf '%s\n' "  一键创建: ${BEGINNER_CREATE_SHAPE_DEFAULT} / ${BEGINNER_CREATE_OCPUS_DEFAULT} OCPU / ${BEGINNER_CREATE_MEMORY_GB_DEFAULT} GB / ${BEGINNER_CREATE_BOOT_VOLUME_GB_DEFAULT} GB 启动盘"
+    printf '%s\n' ""
 
     if [[ "$edit_update" == true ]]; then
-        echo -e "${YELLOW}一键修改实例配置默认值:${NC}"
+        printf '%b\n' "${YELLOW}一键修改实例配置默认值:${NC}"
         read -p "目标 OCPU [默认: ${BEGINNER_UPDATE_OCPUS_DEFAULT}]: " update_ocpus
         update_ocpus="${update_ocpus:-$BEGINNER_UPDATE_OCPUS_DEFAULT}"
         read -p "目标内存 GB [默认: ${BEGINNER_UPDATE_MEMORY_GB_DEFAULT}]: " update_memory
         update_memory="${update_memory:-$BEGINNER_UPDATE_MEMORY_GB_DEFAULT}"
         read -p "目标启动盘 GB [默认: ${BEGINNER_UPDATE_BOOT_VOLUME_GB_DEFAULT}]: " update_boot_volume
         update_boot_volume="${update_boot_volume:-$BEGINNER_UPDATE_BOOT_VOLUME_GB_DEFAULT}"
-        echo ""
+        printf '%s\n' ""
 
         if ! is_valid_positive_decimal "$update_ocpus" || ! is_valid_positive_decimal "$update_memory"; then
             log_error "一键修改的 OCPU 和内存必须为大于 0 的数字"
@@ -272,7 +273,7 @@ configure_beginner_defaults() {
     fi
 
     if [[ "$edit_create" == true ]]; then
-        echo -e "${YELLOW}一键创建实例默认值:${NC}"
+        printf '%b\n' "${YELLOW}一键创建实例默认值:${NC}"
         read -p "镜像系统 [默认: ${BEGINNER_CREATE_IMAGE_OS_DEFAULT}]: " create_image_os
         create_image_os="${create_image_os:-$BEGINNER_CREATE_IMAGE_OS_DEFAULT}"
         read -p "镜像版本 [默认: ${BEGINNER_CREATE_IMAGE_OS_VERSION_DEFAULT}]: " create_image_os_version
@@ -310,15 +311,15 @@ configure_beginner_defaults() {
         fi
     fi
 
-    echo ""
-    echo "即将保存:"
-    [[ "$edit_update" == true ]] && echo "  一键修改: ${update_ocpus} OCPU / ${update_memory} GB / ${update_boot_volume} GB 启动盘"
+    printf '%s\n' ""
+    printf '%s\n' "即将保存:"
+    [[ "$edit_update" == true ]] && printf '%s\n' "  一键修改: ${update_ocpus} OCPU / ${update_memory} GB / ${update_boot_volume} GB 启动盘"
     if [[ "$edit_create" == true ]]; then
-        echo "  一键创建: ${create_shape} / ${create_ocpus} OCPU / ${create_memory} GB / ${create_boot_volume} GB 启动盘"
-        echo "  镜像:     ${create_image_os} ${create_image_os_version}"
+        printf '%s\n' "  一键创建: ${create_shape} / ${create_ocpus} OCPU / ${create_memory} GB / ${create_boot_volume} GB 启动盘"
+        printf '%s\n' "  镜像:     ${create_image_os} ${create_image_os_version}"
     fi
-    echo "  配置文件: $BEGINNER_DEFAULTS_CONFIG"
-    echo ""
+    printf '%s\n' "  配置文件: $BEGINNER_DEFAULTS_CONFIG"
+    printf '%s\n' ""
     read -p "确认保存默认配置? [Y/n]: " -r
     [[ -z "$REPLY" ]] && REPLY="y"
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
@@ -450,8 +451,8 @@ ensure_create_ssh_public_key() {
     chmod 600 "$CREATE_SSH_PRIVATE_KEY_DEFAULT" 2>/dev/null || true
     chmod 644 "$CREATE_SSH_PUBLIC_KEY_DEFAULT" 2>/dev/null || true
     log_info "已自动生成 SSH 密钥对"
-    echo "私钥: $CREATE_SSH_PRIVATE_KEY_DEFAULT"
-    echo "公钥: $CREATE_SSH_PUBLIC_KEY_DEFAULT"
+    printf '%s\n' "私钥: $CREATE_SSH_PRIVATE_KEY_DEFAULT"
+    printf '%s\n' "公钥: $CREATE_SSH_PUBLIC_KEY_DEFAULT"
 
     SELECT_RESULT="$CREATE_SSH_PUBLIC_KEY_DEFAULT"
     return 0
@@ -517,7 +518,7 @@ resolve_telegram_chat_id() {
 
     [[ -n "$bot_id" ]] || return 1
     updates=$(curl -s "https://api.telegram.org/bot${bot_id}/getUpdates" 2>/dev/null)
-    chat_id=$(echo "$updates" | jq -r '
+    chat_id=$(printf '%s\n' "$updates" | jq -r '
         .result
         | reverse
         | .[]
@@ -553,11 +554,11 @@ choose_default_smtp_settings() {
         return 0
     fi
 
-    echo "Common SMTP defaults:"
-    echo "  1) QQ mail   smtp.qq.com:465"
-    echo "  2) 163 mail  smtp.163.com:465"
-    echo "  3) Custom"
-    echo ""
+    printf '%s\n' "Common SMTP defaults:"
+    printf '%s\n' "  1) QQ mail   smtp.qq.com:465"
+    printf '%s\n' "  2) 163 mail  smtp.163.com:465"
+    printf '%s\n' "  3) Custom"
+    printf '%s\n' ""
     read -p "Select mail type [default: 1 QQ mail]: " smtp_choice
     smtp_choice="${smtp_choice:-1}"
 
@@ -585,30 +586,30 @@ configure_email() {
 }
 
 configure_notifications() {
-    echo -e "${BOLD}========================================${NC}"
-    echo -e "${BOLD}配置通知${NC}"
-    echo -e "${BOLD}========================================${NC}"
-    echo ""
+    printf '%b\n' "${BOLD}========================================${NC}"
+    printf '%b\n' "${BOLD}配置通知${NC}"
+    printf '%b\n' "${BOLD}========================================${NC}"
+    printf '%s\n' ""
 
     # 显示当前配置
     if [[ -f "$EMAIL_CONFIG_FILE" ]]; then
-        echo -e "${CYAN}当前配置:${NC}"
-        echo "  通知方式: ${NOTIFY_METHOD:-email}"
-        echo "  SMTP 服务器: ${SMTP_HOST:-未设置}"
-        echo "  SMTP 端口: ${SMTP_PORT:-未设置}"
-        echo "  发件人邮箱: ${SMTP_USER:-未设置}"
-        echo "  收件人邮箱: ${EMAIL_TO:-未设置}"
-        echo "  TG Bot ID: $(format_tg_bot_id_for_display "$TG_BOT_ID")"
-        echo "  TG Chat ID: ${TG_CHAT_ID:-未设置}"
-        echo ""
+        printf '%b\n' "${CYAN}当前配置:${NC}"
+        printf '%s\n' "  通知方式: ${NOTIFY_METHOD:-email}"
+        printf '%s\n' "  SMTP 服务器: ${SMTP_HOST:-未设置}"
+        printf '%s\n' "  SMTP 端口: ${SMTP_PORT:-未设置}"
+        printf '%s\n' "  发件人邮箱: ${SMTP_USER:-未设置}"
+        printf '%s\n' "  收件人邮箱: ${EMAIL_TO:-未设置}"
+        printf '%s\n' "  TG Bot ID: $(format_tg_bot_id_for_display "$TG_BOT_ID")"
+        printf '%s\n' "  TG Chat ID: ${TG_CHAT_ID:-未设置}"
+        printf '%s\n' ""
     fi
 
-    echo "通知方式:"
-    echo "  1) 邮件"
-    echo "  2) Telegram 机器人"
-    echo "  3) 邮件 + Telegram"
-    echo "  4) 关闭通知"
-    echo ""
+    printf '%s\n' "通知方式:"
+    printf '%s\n' "  1) 邮件"
+    printf '%s\n' "  2) Telegram 机器人"
+    printf '%s\n' "  3) 邮件 + Telegram"
+    printf '%s\n' "  4) 关闭通知"
+    printf '%s\n' ""
 
     local notify_choice
     read -p "请选择通知方式 [当前: ${NOTIFY_METHOD:-email}]: " notify_choice
@@ -622,13 +623,13 @@ configure_notifications() {
     esac
 
     if [[ "$NOTIFY_METHOD" == "email" || "$NOTIFY_METHOD" == "both" ]]; then
-        echo ""
-        echo "请输入邮件配置（直接回车保持当前值）:"
-        echo "Tips:"
-        echo "  QQ  mail: smtp.qq.com:465"
-        echo "  163 mail: smtp.163.com:465"
-        echo "  SMTP pass: use app password / auth code, not login password"
-        echo ""
+        printf '%s\n' ""
+        printf '%s\n' "请输入邮件配置（直接回车保持当前值）:"
+        printf '%s\n' "Tips:"
+        printf '%s\n' "  QQ  mail: smtp.qq.com:465"
+        printf '%s\n' "  163 mail: smtp.163.com:465"
+        printf '%s\n' "  SMTP pass: use app password / auth code, not login password"
+        printf '%s\n' ""
         choose_default_smtp_settings
 
         # SMTP 服务器
@@ -660,15 +661,15 @@ configure_notifications() {
     fi
 
     if [[ "$NOTIFY_METHOD" == "telegram" || "$NOTIFY_METHOD" == "both" ]]; then
-        echo ""
-        echo "请输入 Telegram 机器人配置（直接回车保持当前值）:"
-        echo "获取 TG Bot ID/Token:"
-        echo "  1) 在 Telegram 打开 @BotFather"
-        echo "  2) 发送 /newbot 创建机器人"
-        echo "  3) 复制 BotFather 返回的 Token，例如 123456789:AA..."
-        echo "  4) 打开新机器人，先给它发送任意消息"
-        echo "  5) 脚本会尝试自动获取 Chat ID"
-        echo ""
+        printf '%s\n' ""
+        printf '%s\n' "请输入 Telegram 机器人配置（直接回车保持当前值）:"
+        printf '%s\n' "获取 TG Bot ID/Token:"
+        printf '%s\n' "  1) 在 Telegram 打开 @BotFather"
+        printf '%s\n' "  2) 发送 /newbot 创建机器人"
+        printf '%s\n' "  3) 复制 BotFather 返回的 Token，例如 123456789:AA..."
+        printf '%s\n' "  4) 打开新机器人，先给它发送任意消息"
+        printf '%s\n' "  5) 脚本会尝试自动获取 Chat ID"
+        printf '%s\n' ""
 
         local new_tg_bot_id detected_chat_id new_tg_chat_id
         read -p "TG Bot ID/Token [当前: $(format_tg_bot_id_for_display "$TG_BOT_ID")]: " new_tg_bot_id
@@ -690,20 +691,20 @@ configure_notifications() {
         fi
     fi
 
-    echo ""
-    echo -e "${CYAN}配置摘要:${NC}"
-    echo "  通知方式: ${NOTIFY_METHOD}"
+    printf '%s\n' ""
+    printf '%b\n' "${CYAN}配置摘要:${NC}"
+    printf '%s\n' "  通知方式: ${NOTIFY_METHOD}"
     if [[ "$NOTIFY_METHOD" == "email" || "$NOTIFY_METHOD" == "both" ]]; then
-        echo "  SMTP 服务器: ${SMTP_HOST}"
-        echo "  SMTP 端口: ${SMTP_PORT}"
-        echo "  发件人邮箱: ${SMTP_USER}"
-        echo "  收件人邮箱: ${EMAIL_TO}"
+        printf '%s\n' "  SMTP 服务器: ${SMTP_HOST}"
+        printf '%s\n' "  SMTP 端口: ${SMTP_PORT}"
+        printf '%s\n' "  发件人邮箱: ${SMTP_USER}"
+        printf '%s\n' "  收件人邮箱: ${EMAIL_TO}"
     fi
     if [[ "$NOTIFY_METHOD" == "telegram" || "$NOTIFY_METHOD" == "both" ]]; then
-        echo "  TG Bot ID: $(format_tg_bot_id_for_display "$TG_BOT_ID")"
-        echo "  TG Chat ID: ${TG_CHAT_ID:-未设置}"
+        printf '%s\n' "  TG Bot ID: $(format_tg_bot_id_for_display "$TG_BOT_ID")"
+        printf '%s\n' "  TG Chat ID: ${TG_CHAT_ID:-未设置}"
     fi
-    echo ""
+    printf '%s\n' ""
 
     # 确认保存
     read -p "确认保存配置? [Y/n]: " -r
@@ -730,7 +731,7 @@ test_notification_config() {
         return 1
     fi
 
-    echo ""
+    printf '%s\n' ""
     read -p "是否发送测试通知? [Y/n]: " -r
     [[ -z "$REPLY" ]] && REPLY="y"
     if [[ $REPLY =~ ^[Yy]$ ]]; then
@@ -767,7 +768,7 @@ Content-Type: text/plain; charset=UTF-8
 ${formatted_body}"
 
     # 使用 curl 发送邮件 (SMTP with SSL, LOGIN认证)
-    echo "$email_content" | curl -s --url "smtps://${SMTP_HOST}:${SMTP_PORT}" \
+    printf '%s\n' "$email_content" | curl -s --url "smtps://${SMTP_HOST}:${SMTP_PORT}" \
         --ssl-reqd \
         --mail-from "${SMTP_USER}" \
         --mail-rcpt "${EMAIL_TO}" \
@@ -812,7 +813,7 @@ ${formatted_body}"
         -H "Content-Type: application/json" \
         -d "$payload" \
         "https://api.telegram.org/bot${TG_BOT_ID}/sendMessage" 2>/dev/null)
-    ok=$(echo "$response" | jq -r '.ok // false' 2>/dev/null)
+    ok=$(printf '%s\n' "$response" | jq -r '.ok // false' 2>/dev/null)
 
     if [[ "$ok" == "true" ]]; then
         log_info "Telegram 通知已发送: ${subject}"
@@ -859,26 +860,26 @@ send_notification() {
 # 日志函数
 # ================================
 log_info() {
-    echo -e "${GREEN}[INFO]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1"
+    printf '%b\n' "${GREEN}[INFO]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1"
 }
 
 log_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1"
+    printf '%b\n' "${YELLOW}[WARN]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1"
 }
 
 log_error() {
-    echo -e "${RED}[ERROR]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1"
+    printf '%b\n' "${RED}[ERROR]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1"
 }
 
 log_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1"
+    printf '%b\n' "${GREEN}[SUCCESS]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1"
 }
 
 # ================================
 # 暂停函数
 # ================================
 pause() {
-    echo ""
+    printf '%s\n' ""
     read -p "按任意键继续..." -n 1 -r
 }
 
@@ -981,16 +982,16 @@ check_existing_task_for_instance() {
                 local pid=$(cat "$pid_file" 2>/dev/null)
                 if kill -0 "$pid" 2>/dev/null; then
                     local task_id=$(jq -r '.task_id' "$task_info" 2>/dev/null)
-                    echo ""
+                    printf '%s\n' ""
                     log_warn "检测到该实例已有后台任务正在运行！"
-                    echo ""
-                    echo "  任务 ID: $task_id"
-                    echo "  任务类型: $(jq -r '.task_type' "$task_info" 2>/dev/null)"
-                    echo "  创建时间: $(jq -r '.create_time' "$task_info" 2>/dev/null)"
-                    echo "  目标 OCPU: $(jq -r '.target_ocpus' "$task_info" 2>/dev/null)"
-                    echo "  目标内存: $(jq -r '.target_memory' "$task_info" 2>/dev/null) GB"
-                    echo "  执行次数: $(jq -r '.attempt' "$task_info" 2>/dev/null)"
-                    echo ""
+                    printf '%s\n' ""
+                    printf '%s\n' "  任务 ID: $task_id"
+                    printf '%s\n' "  任务类型: $(jq -r '.task_type' "$task_info" 2>/dev/null)"
+                    printf '%s\n' "  创建时间: $(jq -r '.create_time' "$task_info" 2>/dev/null)"
+                    printf '%s\n' "  目标 OCPU: $(jq -r '.target_ocpus' "$task_info" 2>/dev/null)"
+                    printf '%s\n' "  目标内存: $(jq -r '.target_memory' "$task_info" 2>/dev/null) GB"
+                    printf '%s\n' "  执行次数: $(jq -r '.attempt' "$task_info" 2>/dev/null)"
+                    printf '%s\n' ""
                     read -p "是否停止现有任务并创建新任务? [y/N]: " -r
                     [[ -z "$REPLY" ]] && REPLY="n"
 
@@ -1093,19 +1094,19 @@ create_background_task() {
 
         # 如果已有运行中的任务，询问用户
         if [[ -n "$existing_task" ]]; then
-            echo ""
+            printf '%s\n' ""
             log_warn "检测到该实例已有后台任务正在运行"
-            echo ""
-            echo "现有任务 ID: $existing_task_id"
-            echo "任务类型: $(jq -r '.task_type' "$existing_task/task.info")"
-            echo "创建时间: $(jq -r '.create_time' "$existing_task/task.info")"
-            echo "目标 OCPU: $(jq -r '.target_ocpus' "$existing_task/task.info")"
-            echo "目标内存: $(jq -r '.target_memory' "$existing_task/task.info")GB"
-            echo ""
+            printf '%s\n' ""
+            printf '%s\n' "现有任务 ID: $existing_task_id"
+            printf '%s\n' "任务类型: $(jq -r '.task_type' "$existing_task/task.info")"
+            printf '%s\n' "创建时间: $(jq -r '.create_time' "$existing_task/task.info")"
+            printf '%s\n' "目标 OCPU: $(jq -r '.target_ocpus' "$existing_task/task.info")"
+            printf '%s\n' "目标内存: $(jq -r '.target_memory' "$existing_task/task.info")GB"
+            printf '%s\n' ""
             read -p "是否停止现有任务并创建新任务? [y/N]: " -r
             [[ -z "$REPLY" ]] && REPLY="n"
-            echo
-
+            printf '
+'
             if [[ ! $REPLY =~ ^[Yy]$ ]]; then
                 log_info "操作已取消"
                 pause
@@ -1115,7 +1116,7 @@ create_background_task() {
             # 停止现有任务
             stop_task "$existing_task_id"
             log_success "已停止现有任务"
-            echo ""
+            printf '%s\n' ""
         fi
     fi
 
@@ -1150,17 +1151,17 @@ EOF
     ) &>"$task_path/task.log" &
 
     local pid=$!
-    echo $pid > "$task_path/task.pid"
+    printf '%s\n' $pid > "$task_path/task.pid"
 
     log_success "后台任务已创建"
-    echo ""
-    echo "任务 ID: $task_id"
-    echo "日志文件: $task_path/task.log"
-    echo ""
-    echo -e "${CYAN}提示: 任务将在后台持续执行，您可以：${NC}"
-    echo "  - 在主菜单进入“管理后台任务”查看任务进度"
-    echo "  - 退出此脚本不会影响后台任务"
-    echo ""
+    printf '%s\n' ""
+    printf '%s\n' "任务 ID: $task_id"
+    printf '%s\n' "日志文件: $task_path/task.log"
+    printf '%s\n' ""
+    printf '%b\n' "${CYAN}提示: 任务将在后台持续执行，您可以：${NC}"
+    printf '%s\n' "  - 在主菜单进入“管理后台任务”查看任务进度"
+    printf '%s\n' "  - 退出此脚本不会影响后台任务"
+    printf '%s\n' ""
 }
 
 # 后台执行任务
@@ -1209,7 +1210,7 @@ exec_background_task() {
     append_task_log_unlocked() {
         local level="$1"
         local message="$2"
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $message" >> "$log_file"
+        printf '%s\n' "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $message" >> "$log_file"
     }
 
     log_info() {
@@ -1342,7 +1343,7 @@ exec_background_task() {
             return 0
         fi
 
-        error_msg=$(echo "$result" | jq -r '.message // .error.message // "未知错误"' 2>/dev/null || echo "$result")
+        error_msg=$(printf '%s\n' "$result" | jq -r '.message // .error.message // "未知错误"' 2>/dev/null || printf '%s\n' "$result")
         if update_task_status "$attempt_no" "failed" "$error_msg"; then
             log_error "第 $attempt_no 次请求更新失败: $result"
             log_info "第 $attempt_no 次请求耗时: ${attempt_elapsed}秒"
@@ -1511,10 +1512,10 @@ exec_background_task() {
 
 get_task_type_label() {
     case "$1" in
-        direct_update|direct_update_instance) echo "直接更新" ;;
-        full_update|full_update_instance) echo "完整更新" ;;
-        create_instance) echo "创建实例" ;;
-        *) echo "$1" ;;
+        direct_update|direct_update_instance) printf '%s\n' "直接更新" ;;
+        full_update|full_update_instance) printf '%s\n' "完整更新" ;;
+        create_instance) printf '%s\n' "创建实例" ;;
+        *) printf '%s\n' "$1" ;;
     esac
 }
 
@@ -1529,7 +1530,7 @@ get_task_subject_label() {
         local instance_ocid
         instance_ocid=$(jq -r '.instance_ocid // ""' "$task_info")
         local instance_short="${instance_ocid##*.}"
-        echo "${instance_short:0:20}..."
+        printf '%s\n' "${instance_short:0:20}..."
     fi
 }
 
@@ -1544,12 +1545,12 @@ get_task_target_label() {
 
     if [[ "$task_type" == "create_instance" ]]; then
         if [[ -n "$shape" && "$shape" != "null" ]]; then
-            echo "${shape} / ${target_ocpus} OCPU / ${target_memory} GB"
+            printf '%s\n' "${shape} / ${target_ocpus} OCPU / ${target_memory} GB"
         else
-            echo "创建新实例"
+            printf '%s\n' "创建新实例"
         fi
     else
-        echo "${target_ocpus} OCPU / ${target_memory} GB"
+        printf '%s\n' "${target_ocpus} OCPU / ${target_memory} GB"
     fi
 }
 
@@ -1557,10 +1558,10 @@ get_task_target_label() {
 list_background_tasks() {
     init_task_dir
 
-    echo -e "${BOLD}========================================${NC}"
-    echo -e "${BOLD}后台任务列表${NC}"
-    echo -e "${BOLD}========================================${NC}"
-    echo ""
+    printf '%b\n' "${BOLD}========================================${NC}"
+    printf '%b\n' "${BOLD}后台任务列表${NC}"
+    printf '%b\n' "${BOLD}========================================${NC}"
+    printf '%s\n' ""
 
     # 声明全局数组存储任务 ID（供后续选择使用）
     TASK_IDS=()
@@ -1616,20 +1617,20 @@ list_background_tasks() {
             *) last_status_color="${YELLOW}" ;;
         esac
 
-        echo -e "#$task_count ${BOLD}$task_id${NC}"
-        echo "  类型: $task_type_label"
-        echo "  对象: $subject_label"
-        echo "  目标: $target_label"
-        echo -e "  状态: ${status_color}${status}${NC}"
-        echo -e "  执行次数: ${BOLD}${attempt}${NC}"
-        echo -e "  上次状态: ${last_status_color}${last_status}${NC}"
+        printf '%b\n' "#$task_count ${BOLD}$task_id${NC}"
+        printf '%s\n' "  类型: $task_type_label"
+        printf '%s\n' "  对象: $subject_label"
+        printf '%s\n' "  目标: $target_label"
+        printf '%b\n' "  状态: ${status_color}${status}${NC}"
+        printf '%b\n' "  执行次数: ${BOLD}${attempt}${NC}"
+        printf '%b\n' "  上次状态: ${last_status_color}${last_status}${NC}"
 
         # 显示错误信息（如果有）- 提取关键信息并翻译
         if [[ -n "$last_error" && "$last_error" != "null" && "$last_error" != "" ]]; then
             local error_payload error_code error_message error_translated
             error_payload=$(get_task_error_payload "$last_error")
-            error_code=$(printf '%s' "$error_payload" | jq -r 'if type == "object" then .code // "Unknown" else "Unknown" end' 2>/dev/null || echo "Unknown")
-            error_message=$(printf '%s' "$error_payload" | jq -r 'if type == "object" then .message // "" else . end' 2>/dev/null || echo "")
+            error_code=$(printf '%s' "$error_payload" | jq -r 'if type == "object" then .code // "Unknown" else "Unknown" end' 2>/dev/null || printf '%s\n' "Unknown")
+            error_message=$(printf '%s' "$error_payload" | jq -r 'if type == "object" then .message // "" else . end' 2>/dev/null || printf '%s\n' "")
 
             # 翻译常见错误
             case "$error_code" in
@@ -1678,19 +1679,19 @@ list_background_tasks() {
                 msg_translated="${msg_translated:0:77}..."
             fi
 
-            echo -e "  ${RED}✗ 错误: [$error_translated] $msg_translated${NC}"
+            printf '%b\n' "  ${RED}✗ 错误: [$error_translated] $msg_translated${NC}"
         fi
 
         if [[ "$last_attempt_time" != "N/A" ]]; then
-            echo "  上次尝试: $last_attempt_time"
+            printf '%s\n' "  上次尝试: $last_attempt_time"
         fi
 
-        echo ""
+        printf '%s\n' ""
     done
 
     if [[ $task_count -eq 0 ]]; then
-        echo "暂无后台任务"
-        echo ""
+        printf '%s\n' "暂无后台任务"
+        printf '%s\n' ""
     fi
 }
 
@@ -1705,15 +1706,15 @@ view_task_detail() {
     fi
 
     while true; do
-        echo -e "${BOLD}========================================${NC}"
-        echo -e "${BOLD}任务详情: $task_id${NC}"
-        echo -e "${BOLD}========================================${NC}"
-        echo ""
+        printf '%b\n' "${BOLD}========================================${NC}"
+        printf '%b\n' "${BOLD}任务详情: $task_id${NC}"
+        printf '%b\n' "${BOLD}========================================${NC}"
+        printf '%s\n' ""
 
         # 显示任务信息（格式化）
         local task_info="$task_path/task.info"
         if [[ -f "$task_info" ]]; then
-            echo -e "${CYAN}任务信息:${NC}"
+            printf '%b\n' "${CYAN}任务信息:${NC}"
 
             # 读取并格式化显示
             local task_type instance_ocid target_ocpus target_memory status attempt create_time
@@ -1758,53 +1759,53 @@ view_task_detail() {
             # 显示基础信息
             if [[ "$task_type" == "create_instance" ]]; then
                 {
-                    echo -e "任务ID\t$task_id"
-                    echo -e "类型\t$task_type_label"
-                    echo -e "实例名称\t$display_name"
-                    echo -e "实例规格\t$shape"
-                    echo -e "配置文件\t${config_file:-N/A}"
-                    echo -e "目标配置\t$target_label"
-                    echo -e "重试间隔\t$(jq -r '.retry_interval // 30' "$task_info") 秒"
-                    echo -e "创建时间\t$create_time"
-                    echo -e "当前状态\t${status_color}${status}${NC}"
-                    echo -e "执行次数\t$attempt"
-                    echo -e "上次状态\t${last_status_color}${last_status}${NC}"
-                    echo -e "上次尝试\t$last_attempt_time"
-                    [[ -n "$created_instance_ocid" ]] && echo -e "已创建实例\t${created_instance_ocid:0:50}..."
+                    printf '%b\n' "任务ID\t$task_id"
+                    printf '%b\n' "类型\t$task_type_label"
+                    printf '%b\n' "实例名称\t$display_name"
+                    printf '%b\n' "实例规格\t$shape"
+                    printf '%b\n' "配置文件\t${config_file:-N/A}"
+                    printf '%b\n' "目标配置\t$target_label"
+                    printf '%b\n' "重试间隔\t$(jq -r '.retry_interval // 30' "$task_info") 秒"
+                    printf '%b\n' "创建时间\t$create_time"
+                    printf '%b\n' "当前状态\t${status_color}${status}${NC}"
+                    printf '%b\n' "执行次数\t$attempt"
+                    printf '%b\n' "上次状态\t${last_status_color}${last_status}${NC}"
+                    printf '%b\n' "上次尝试\t$last_attempt_time"
+                    [[ -n "$created_instance_ocid" ]] && printf '%b\n' "已创建实例\t${created_instance_ocid:0:50}..."
                 } | format_tabular_output
             else
                 {
-                    echo -e "任务ID\t$task_id"
-                    echo -e "类型\t$task_type_label"
-                    echo -e "实例OCID\t${instance_ocid:0:50}..."
-                    echo -e "目标配置\t$target_label"
+                    printf '%b\n' "任务ID\t$task_id"
+                    printf '%b\n' "类型\t$task_type_label"
+                    printf '%b\n' "实例OCID\t${instance_ocid:0:50}..."
+                    printf '%b\n' "目标配置\t$target_label"
                     if [[ "$task_type" == "direct_update" || "$task_type" == "direct_update_instance" ]]; then
-                        echo -e "请求间隔\t$(jq -r '.request_interval // 60' "$task_info") 秒"
+                        printf '%b\n' "请求间隔\t$(jq -r '.request_interval // 60' "$task_info") 秒"
                     else
-                        echo -e "重试间隔\t$(jq -r '.retry_interval // 10' "$task_info") 秒"
+                        printf '%b\n' "重试间隔\t$(jq -r '.retry_interval // 10' "$task_info") 秒"
                     fi
-                    echo -e "创建时间\t$create_time"
-                    echo -e "当前状态\t${status_color}${status}${NC}"
-                    echo -e "执行次数\t$attempt"
-                    echo -e "上次状态\t${last_status_color}${last_status}${NC}"
-                    echo -e "上次尝试\t$last_attempt_time"
+                    printf '%b\n' "创建时间\t$create_time"
+                    printf '%b\n' "当前状态\t${status_color}${status}${NC}"
+                    printf '%b\n' "执行次数\t$attempt"
+                    printf '%b\n' "上次状态\t${last_status_color}${last_status}${NC}"
+                    printf '%b\n' "上次尝试\t$last_attempt_time"
                 } | format_tabular_output
             fi
-            echo ""
+            printf '%s\n' ""
 
             # 显示错误信息（如果有）- 格式化显示
             if [[ -n "$last_error" && "$last_error" != "null" && "$last_error" != "" ]]; then
-                echo -e "${RED}========================================${NC}"
-                echo -e "${RED}错误详情:${NC}"
-                echo -e "${RED}========================================${NC}"
+                printf '%b\n' "${RED}========================================${NC}"
+                printf '%b\n' "${RED}错误详情:${NC}"
+                printf '%b\n' "${RED}========================================${NC}"
 
                 local error_payload error_code error_message error_status error_timestamp error_request_id
                 error_payload=$(get_task_error_payload "$last_error")
-                error_code=$(printf '%s' "$error_payload" | jq -r 'if type == "object" then .code // "Unknown" else "Unknown" end' 2>/dev/null || echo "Unknown")
-                error_message=$(printf '%s' "$error_payload" | jq -r 'if type == "object" then .message // "" else . end' 2>/dev/null || echo "")
-                error_status=$(printf '%s' "$error_payload" | jq -r 'if type == "object" then .status // "" else "" end' 2>/dev/null || echo "")
-                error_timestamp=$(printf '%s' "$error_payload" | jq -r 'if type == "object" then .timestamp // "" else "" end' 2>/dev/null || echo "")
-                error_request_id=$(printf '%s' "$error_payload" | jq -r 'if type == "object" then .["opc-request-id"] // "" else "" end' 2>/dev/null || echo "")
+                error_code=$(printf '%s' "$error_payload" | jq -r 'if type == "object" then .code // "Unknown" else "Unknown" end' 2>/dev/null || printf '%s\n' "Unknown")
+                error_message=$(printf '%s' "$error_payload" | jq -r 'if type == "object" then .message // "" else . end' 2>/dev/null || printf '%s\n' "")
+                error_status=$(printf '%s' "$error_payload" | jq -r 'if type == "object" then .status // "" else "" end' 2>/dev/null || printf '%s\n' "")
+                error_timestamp=$(printf '%s' "$error_payload" | jq -r 'if type == "object" then .timestamp // "" else "" end' 2>/dev/null || printf '%s\n' "")
+                error_request_id=$(printf '%s' "$error_payload" | jq -r 'if type == "object" then .["opc-request-id"] // "" else "" end' 2>/dev/null || printf '%s\n' "")
 
                 # 翻译错误代码
                 local error_code_translated
@@ -1828,68 +1829,68 @@ view_task_detail() {
                 esac
 
                 {
-                    echo -e "错误代码\t${RED}$error_code_translated${NC}"
-                    echo -e "错误消息\t$msg_translated"
-                    [[ -n "$error_status" && "$error_status" != "null" ]] && echo -e "HTTP状态\t$error_status"
-                    [[ -n "$error_timestamp" && "$error_timestamp" != "null" ]] && echo -e "时间戳\t$error_timestamp"
-                    [[ -n "$error_request_id" && "$error_request_id" != "null" ]] && echo -e "请求ID\t${error_request_id:0:40}..."
+                    printf '%b\n' "错误代码\t${RED}$error_code_translated${NC}"
+                    printf '%b\n' "错误消息\t$msg_translated"
+                    [[ -n "$error_status" && "$error_status" != "null" ]] && printf '%b\n' "HTTP状态\t$error_status"
+                    [[ -n "$error_timestamp" && "$error_timestamp" != "null" ]] && printf '%b\n' "时间戳\t$error_timestamp"
+                    [[ -n "$error_request_id" && "$error_request_id" != "null" ]] && printf '%b\n' "请求ID\t${error_request_id:0:40}..."
                 } | format_tabular_output
-                echo ""
+                printf '%s\n' ""
 
                 # 显示建议
-                echo -e "${YELLOW}建议:${NC}"
+                printf '%b\n' "${YELLOW}建议:${NC}"
                 case "$error_code" in
                     InternalError)
-                        echo "  - OCI 服务端临时问题，请稍后重试"
-                        echo "  - 如果持续出现，请联系 Oracle 支持"
+                        printf '%s\n' "  - OCI 服务端临时问题，请稍后重试"
+                        printf '%s\n' "  - 如果持续出现，请联系 Oracle 支持"
                         ;;
                     NotAuthorizedOrNotFound)
-                        echo "  - 检查 IAM 用户是否有足够的权限"
-                        echo "  - 确认实例 OCID 是否正确"
-                        echo "  - 确认实例是否已被删除"
+                        printf '%s\n' "  - 检查 IAM 用户是否有足够的权限"
+                        printf '%s\n' "  - 确认实例 OCID 是否正确"
+                        printf '%s\n' "  - 确认实例是否已被删除"
                         ;;
                     InvalidParameter)
-                        echo "  - 检查请求参数是否正确"
-                        echo "  - 确认目标配置是否在允许范围内"
+                        printf '%s\n' "  - 检查请求参数是否正确"
+                        printf '%s\n' "  - 确认目标配置是否在允许范围内"
                         ;;
                     LimitExceeded|ServiceError)
                         if [[ "$error_message" == *"Out of host capacity"* ]]; then
-                            echo "  - 主机容量不足是常见问题，建议："
-                            echo "    1. 降低目标配置（如 2 OCPU → 1 OCPU）"
-                            echo "    2. 更换可用性域 (AD)"
-                            echo "    3. 在非高峰时段重试"
-                            echo "    4. 保持任务继续重试，直到成功"
+                            printf '%s\n' "  - 主机容量不足是常见问题，建议："
+                            printf '%s\n' "    1. 降低目标配置（如 2 OCPU → 1 OCPU）"
+                            printf '%s\n' "    2. 更换可用性域 (AD)"
+                            printf '%s\n' "    3. 在非高峰时段重试"
+                            printf '%s\n' "    4. 保持任务继续重试，直到成功"
                         else
-                            echo "  - 请稍后重试或联系 Oracle 支持"
+                            printf '%s\n' "  - 请稍后重试或联系 Oracle 支持"
                         fi
                         ;;
                     *)
-                        echo "  - 请查看完整错误日志获取更多信息"
+                        printf '%s\n' "  - 请查看完整错误日志获取更多信息"
                         ;;
                 esac
-                echo ""
+                printf '%s\n' ""
             fi
         fi
 
         # 显示日志选项
         local log_file="$task_path/task.log"
         if [[ -f "$log_file" ]]; then
-            echo -e "${CYAN}日志操作:${NC}"
-            echo "  1) 查看最近日志 (最后20行)"
-            echo "  2) 实时查看日志 (tail -f)"
-            echo "  3) 查看完整日志"
-            echo "  0) 返回"
-            echo ""
+            printf '%b\n' "${CYAN}日志操作:${NC}"
+            printf '%s\n' "  1) 查看最近日志 (最后20行)"
+            printf '%s\n' "  2) 实时查看日志 (tail -f)"
+            printf '%s\n' "  3) 查看完整日志"
+            printf '%s\n' "  0) 返回"
+            printf '%s\n' ""
             read -p "请选择: " -r
 
             case $REPLY in
                 1)
-                    echo ""
-                    echo -e "${BOLD}最近日志:${NC}"
-                    echo -e "${BOLD}----------------------------------------${NC}"
+                    printf '%s\n' ""
+                    printf '%b\n' "${BOLD}最近日志:${NC}"
+                    printf '%b\n' "${BOLD}----------------------------------------${NC}"
                     tail -20 "$log_file"
-                    echo -e "${BOLD}----------------------------------------${NC}"
-                    echo ""
+                    printf '%b\n' "${BOLD}----------------------------------------${NC}"
+                    printf '%s\n' ""
                     read -p "按回车键继续..." -r
                     ;;
                 2)
@@ -1926,15 +1927,15 @@ follow_task_log() {
         return 1
     fi
 
-    echo ""
-    echo -e "${BOLD}========================================${NC}"
-    echo -e "${BOLD}实时日志监控: $task_id${NC}"
-    echo -e "${BOLD}========================================${NC}"
-    echo -e "${CYAN}按 Ctrl+C 返回上一级${NC}"
-    echo ""
+    printf '%s\n' ""
+    printf '%b\n' "${BOLD}========================================${NC}"
+    printf '%b\n' "${BOLD}实时日志监控: $task_id${NC}"
+    printf '%b\n' "${BOLD}========================================${NC}"
+    printf '%b\n' "${CYAN}按 Ctrl+C 返回上一级${NC}"
+    printf '%s\n' ""
 
     # 临时替换全局 trap，让 Ctrl+C 能返回上一级而不是退出脚本
-    trap 'echo -e "\n${YELLOW}返回上一级...${NC}"; kill $(jobs -p) 2>/dev/null; trap "echo -e \"\n${YELLOW}操作已取消${NC}\"; exit 0" INT TERM; return 0' INT TERM
+    trap 'printf "%b\n" "\n${YELLOW}返回上一级...${NC}"; kill $(jobs -p) 2>/dev/null; trap "printf \"%b\n\" \"\n${YELLOW}操作已取消${NC}\"; exit 0" INT TERM; return 0' INT TERM
 
     # 在后台运行 tail -f
     tail -f "$log_file" 2>/dev/null &
@@ -1944,7 +1945,7 @@ follow_task_log() {
     wait $tail_pid 2>/dev/null
 
     # 恢复全局 trap
-    trap 'echo -e "\n${YELLOW}操作已取消${NC}"; exit 0' INT TERM
+    trap 'printf "%b\n" "\n${YELLOW}操作已取消${NC}"; exit 0' INT TERM
 }
 
 # 停止任务
@@ -2036,7 +2037,7 @@ resume_task() {
     fi
 
     local pid=$!
-    echo $pid > "$task_path/task.pid"
+    printf '%s\n' $pid > "$task_path/task.pid"
 
     # 更新任务状态
     jq '.status = "running" | .resume_time = "'"$(date -Iseconds)"'"' \
@@ -2068,11 +2069,22 @@ delete_task() {
 # 显示头部
 # ================================
 show_header() {
-    clear
-    echo ""
-    echo -e "${CYAN}[ OCI 实例配置管理工具 v1.0 ]${NC}"
-    echo -e "${CYAN}GitHub: ${PROJECT_URL}${NC}"
-    echo ""
+    printf '%s\n' ""
+    printf '%b\n' "${CYAN}"
+    cat <<'EOF'
+  ___                 _         ___   ____ ___   _____           _
+ / _ \ _ __ __ _  ___| | ___   / _ \ / ___|_ _| |_   _|__   ___ | |
+| | | | '__/ _` |/ __| |/ _ \ | | | | |    | |    | |/ _ \ / _ \| |
+| |_| | | | (_| | (__| |  __/ | |_| | |___ | |    | | (_) | (_) | |
+ \___/|_|  \__,_|\___|_|\___|  \___/ \____|___|   |_|\___/ \___/|_|
+EOF
+    printf '%b\n' "${NC}"
+    printf '%b\n' "${GREEN}OCI 实例配置、创建、更新与后台任务管理工具${NC}"
+    printf '%s\n' "GitHub: ${PROJECT_URL}  Version: ${TOOL_VERSION}  Script: oracle/oracle_oci_tool.sh"
+    printf '%s\n' "------------------------------------------------------------"
+    printf '%b\n' "${BOLD}[ OCI 实例配置管理工具 控制台 ]${NC}"
+    printf '%s\n' "------------------------------------------------------------"
+    printf '%s\n' ""
 }
 
 # ================================
@@ -2080,21 +2092,21 @@ show_header() {
 # ================================
 detect_package_manager() {
     if command -v apt-get >/dev/null 2>&1; then
-        echo "apt"
+        printf '%s\n' "apt"
     elif command -v dnf >/dev/null 2>&1; then
-        echo "dnf"
+        printf '%s\n' "dnf"
     elif command -v yum >/dev/null 2>&1; then
-        echo "yum"
+        printf '%s\n' "yum"
     elif command -v pacman >/dev/null 2>&1; then
-        echo "pacman"
+        printf '%s\n' "pacman"
     elif command -v zypper >/dev/null 2>&1; then
-        echo "zypper"
+        printf '%s\n' "zypper"
     elif command -v apk >/dev/null 2>&1; then
-        echo "apk"
+        printf '%s\n' "apk"
     elif command -v brew >/dev/null 2>&1; then
-        echo "brew"
+        printf '%s\n' "brew"
     else
-        echo "unknown"
+        printf '%s\n' "unknown"
     fi
 }
 
@@ -2103,39 +2115,39 @@ dependency_package_for_tool() {
     local tool_name="$2"
 
     case "$tool_name" in
-        jq) echo "jq" ;;
-        curl) echo "curl" ;;
+        jq) printf '%s\n' "jq" ;;
+        curl) printf '%s\n' "curl" ;;
         python3)
             case "$manager" in
-                pacman) echo "python" ;;
-                brew) echo "python" ;;
-                *) echo "python3" ;;
+                pacman) printf '%s\n' "python" ;;
+                brew) printf '%s\n' "python" ;;
+                *) printf '%s\n' "python3" ;;
             esac
             ;;
         python3_venv)
             case "$manager" in
-                apt) echo "python3-venv" ;;
-                zypper) echo "python3-venv" ;;
-                pacman) echo "python" ;;
-                brew) echo "python" ;;
-                apk) echo "py3-virtualenv" ;;
-                dnf|yum) echo "python3" ;;
+                apt) printf '%s\n' "python3-venv" ;;
+                zypper) printf '%s\n' "python3-venv" ;;
+                pacman) printf '%s\n' "python" ;;
+                brew) printf '%s\n' "python" ;;
+                apk) printf '%s\n' "py3-virtualenv" ;;
+                dnf|yum) printf '%s\n' "python3" ;;
                 *) return 1 ;;
             esac
             ;;
         column)
             case "$manager" in
-                apt) echo "bsdextrautils" ;;
-                dnf|yum|pacman|zypper|apk|brew) echo "util-linux" ;;
+                apt) printf '%s\n' "bsdextrautils" ;;
+                dnf|yum|pacman|zypper|apk|brew) printf '%s\n' "util-linux" ;;
                 *) return 1 ;;
             esac
             ;;
         ssh_keygen)
             case "$manager" in
-                apt|apk) echo "openssh-client" ;;
-                brew) echo "openssh" ;;
-                dnf|yum|zypper) echo "openssh-clients" ;;
-                pacman) echo "openssh" ;;
+                apt|apk) printf '%s\n' "openssh-client" ;;
+                brew) printf '%s\n' "openssh" ;;
+                dnf|yum|zypper) printf '%s\n' "openssh-clients" ;;
+                pacman) printf '%s\n' "openssh" ;;
                 *) return 1 ;;
             esac
             ;;
@@ -2150,7 +2162,7 @@ record_installed_dependency() {
     mkdir -p "$DATA_DIR"
     touch "$DEPENDENCY_STATE_FILE"
     if ! grep -qx "${manager}:${package_name}" "$DEPENDENCY_STATE_FILE" 2>/dev/null; then
-        echo "${manager}:${package_name}" >> "$DEPENDENCY_STATE_FILE"
+        printf '%s\n' "${manager}:${package_name}" >> "$DEPENDENCY_STATE_FILE"
     fi
 }
 
@@ -2294,7 +2306,7 @@ uninstall_recorded_dependencies() {
         return 0
     fi
 
-    echo ""
+    printf '%s\n' ""
     log_info "正在卸载脚本自动安装的系统依赖..."
 
     for entry in "${entries[@]}"; do
@@ -2379,13 +2391,13 @@ install_oci_cli_interactive() {
         return 1
     fi
 
-    echo ""
+    printf '%s\n' ""
     log_info "将自动启动 OCI CLI 官方安装程序"
-    echo "安装版本: OCI CLI 最新版本"
-    echo "安装目录: $install_dir"
-    echo "可执行目录: $exec_dir"
-    echo "环境变量: 仅在本脚本运行期间临时使用，不写入用户 ~/.zshrc 或 ~/.bashrc"
-    echo ""
+    printf '%s\n' "安装版本: OCI CLI 最新版本"
+    printf '%s\n' "安装目录: $install_dir"
+    printf '%s\n' "可执行目录: $exec_dir"
+    printf '%s\n' "环境变量: 仅在本脚本运行期间临时使用，不写入用户 ~/.zshrc 或 ~/.bashrc"
+    printf '%s\n' ""
 
     if ! curl -fsSL "$installer_url" -o "$installer_file"; then
         rm -rf "$installer_home"
@@ -2432,16 +2444,16 @@ prompt_install_missing_dependencies() {
         return 0
     fi
 
-    echo ""
-    echo -e "${CYAN}检测到以下缺失项目:${NC}"
-    [[ "$missing_oci" == "true" ]] && echo "  - OCI CLI"
-    [[ "$missing_jq" == "true" ]] && echo "  - jq"
-    [[ "$missing_curl" == "true" ]] && echo "  - curl"
-    [[ "$missing_column" == "true" ]] && echo "  - column（用于表格对齐显示，可选）"
-    [[ "$missing_python3" == "true" ]] && echo "  - python3"
-    [[ "$missing_python3_venv" == "true" ]] && echo "  - python3 venv"
-    [[ "$missing_ssh_keygen" == "true" ]] && echo "  - ssh-keygen（用于自动生成实例登录密钥）"
-    echo ""
+    printf '%s\n' ""
+    printf '%b\n' "${CYAN}检测到以下缺失项目:${NC}"
+    [[ "$missing_oci" == "true" ]] && printf '%s\n' "  - OCI CLI"
+    [[ "$missing_jq" == "true" ]] && printf '%s\n' "  - jq"
+    [[ "$missing_curl" == "true" ]] && printf '%s\n' "  - curl"
+    [[ "$missing_column" == "true" ]] && printf '%s\n' "  - column（用于表格对齐显示，可选）"
+    [[ "$missing_python3" == "true" ]] && printf '%s\n' "  - python3"
+    [[ "$missing_python3_venv" == "true" ]] && printf '%s\n' "  - python3 venv"
+    [[ "$missing_ssh_keygen" == "true" ]] && printf '%s\n' "  - ssh-keygen（用于自动生成实例登录密钥）"
+    printf '%s\n' ""
     log_info "将自动尝试安装缺失依赖"
 
     local tool_name package_name
@@ -2535,11 +2547,11 @@ remove_oci_cli_installation() {
 
 uninstall_script() {
     show_header
-    echo -e "${BOLD}[8] 卸载脚本${NC}"
-    echo "========================================"
-    echo ""
-    echo -e "${RED}警告: 此操作可能删除依赖、OCI 配置、密钥文件、任务日志和脚本数据${NC}"
-    echo ""
+    printf '%b\n' "${BOLD}[8] 卸载脚本${NC}"
+    printf '%s\n' "========================================"
+    printf '%s\n' ""
+    printf '%b\n' "${RED}警告: 此操作可能删除依赖、OCI 配置、密钥文件、任务日志和脚本数据${NC}"
+    printf '%s\n' ""
 
     read -p "是否继续进入卸载流程? [y/N]: " -r
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
@@ -2556,14 +2568,14 @@ uninstall_script() {
         done < "$DEPENDENCY_STATE_FILE"
     fi
 
-    echo ""
+    printf '%s\n' ""
     read -p "是否先停止所有后台任务? [Y/n]: " -r
     [[ -z "$REPLY" ]] && REPLY="y"
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         stop_all_running_tasks
     fi
 
-    echo ""
+    printf '%s\n' ""
     read -p "是否删除脚本数据目录 (${DATA_DIR})? [Y/n]: " -r
     [[ -z "$REPLY" ]] && REPLY="y"
     if [[ $REPLY =~ ^[Yy]$ ]]; then
@@ -2577,7 +2589,7 @@ uninstall_script() {
         key_file="${key_file/#\~/$HOME}"
     fi
 
-    echo ""
+    printf '%s\n' ""
     read -p "是否删除 OCI 配置文件 (${OCI_CONFIG_FILE})? [Y/n]: " -r
     [[ -z "$REPLY" ]] && REPLY="y"
     if [[ $REPLY =~ ^[Yy]$ ]]; then
@@ -2601,7 +2613,7 @@ uninstall_script() {
         fi
     fi
 
-    echo ""
+    printf '%s\n' ""
     read -p "是否尝试卸载 OCI CLI 安装文件? [Y/n]: " -r
     [[ -z "$REPLY" ]] && REPLY="y"
     if [[ $REPLY =~ ^[Yy]$ ]]; then
@@ -2611,7 +2623,7 @@ uninstall_script() {
     uninstall_recorded_dependencies "${recorded_dependency_entries[@]}"
 
     if [[ -n "$SCRIPT_SOURCE_DIR" && -f "$SCRIPT_SOURCE_DIR/oracle_oci_tool.sh" ]]; then
-        echo ""
+        printf '%s\n' ""
         read -p "是否删除当前本地脚本文件 (${SCRIPT_SOURCE_DIR}/oracle_oci_tool.sh)? [y/N]: " -r
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             rm -f "$SCRIPT_SOURCE_DIR/oracle_oci_tool.sh"
@@ -2619,12 +2631,12 @@ uninstall_script() {
         fi
     fi
 
-    echo ""
+    printf '%s\n' ""
     log_success "卸载流程已完成"
-    echo ""
-    echo "说明:"
-    echo "  - 若 OCI CLI 不是通过常见目录安装，可能仍需手动清理"
-    echo "  - 若通过其他方式安装了依赖，请按对应包管理器手动检查"
+    printf '%s\n' ""
+    printf '%s\n' "说明:"
+    printf '%s\n' "  - 若 OCI CLI 不是通过常见目录安装，可能仍需手动清理"
+    printf '%s\n' "  - 若通过其他方式安装了依赖，请按对应包管理器手动检查"
     pause
 }
 
@@ -2636,10 +2648,10 @@ check_oci_cli() {
 
     if ! command -v oci &> /dev/null; then
         log_error "OCI CLI 未安装"
-        echo ""
-        echo "可执行自动安装:"
-        echo "  选择 [1] 检查 OCI 环境，脚本会安装到 ${DATA_DIR} 并临时配置当前运行环境"
-        echo ""
+        printf '%s\n' ""
+        printf '%s\n' "可执行自动安装:"
+        printf '%s\n' "  选择 [1] 检查 OCI 环境，脚本会安装到 ${DATA_DIR} 并临时配置当前运行环境"
+        printf '%s\n' ""
         return 1
     fi
     return 0
@@ -2705,11 +2717,11 @@ print_oci_error_detail() {
 
     error_output="$(printf '%s\n' "$error_output" | sed '/^[[:space:]]*$/d' | head -n 20)"
     if [[ -n "$error_output" ]]; then
-        echo ""
-        echo -e "${YELLOW}OCI CLI 错误详情:${NC}"
-        echo "----------------------------------------"
+        printf '%s\n' ""
+        printf '%b\n' "${YELLOW}OCI CLI 错误详情:${NC}"
+        printf '%s\n' "----------------------------------------"
         printf '%s\n' "$error_output"
-        echo "----------------------------------------"
+        printf '%s\n' "----------------------------------------"
     fi
 }
 
@@ -2718,48 +2730,48 @@ print_oci_error_suggestions() {
 
     [[ -n "$error_output" ]] || return 0
 
-    echo ""
-    echo -e "${YELLOW}错误解释和建议:${NC}"
-    echo "----------------------------------------"
+    printf '%s\n' ""
+    printf '%b\n' "${YELLOW}错误解释和建议:${NC}"
+    printf '%s\n' "----------------------------------------"
 
     if [[ "$error_output" == *"Permissions on"* && "$error_output" == *"too open"* ]]; then
-        echo "  - 私钥文件权限过宽，OCI CLI 不建议使用当前权限。"
-        echo "    建议执行:"
-        echo "      chmod 600 ${OCI_KEY_FILE_DEFAULT}"
-        echo "    或使用 OCI CLI 提示的 repair-file-permissions 命令修复。"
+        printf '%s\n' "  - 私钥文件权限过宽，OCI CLI 不建议使用当前权限。"
+        printf '%s\n' "    建议执行:"
+        printf '%s\n' "      chmod 600 ${OCI_KEY_FILE_DEFAULT}"
+        printf '%s\n' "    或使用 OCI CLI 提示的 repair-file-permissions 命令修复。"
     fi
 
     if [[ "$error_output" == *"NotAuthenticated"* || "$error_output" == *'"status": 401'* ]]; then
-        echo "  - OCI 返回 NotAuthenticated/401，表示认证信息没有通过。"
-        echo "    常见原因:"
-        echo "      1) config 中 fingerprint 和 OCI 控制台 API Key 指纹不一致"
-        echo "      2) key_file 指向的私钥和控制台上传的公钥不是一对"
-        echo "      3) user OCID 或 tenancy OCID 填错"
-        echo "      4) API 公钥没有上传到该 user 的 API Keys"
-        echo "      5) 私钥文件内容损坏，或复制时多了空格/换行"
-        echo "    建议处理:"
-        echo "      1) 进入 OCI 控制台 -> 用户设置 -> API 密钥"
-        echo "      2) 核对脚本配置里的 user、tenancy、fingerprint"
-        echo "      3) 确认 ${OCI_KEY_FILE_DEFAULT} 是对应 API 公钥的私钥"
-        echo "      4) 如果不确定，建议重新生成 API Key 并重新执行 [2] 初始化 OCI 配置"
+        printf '%s\n' "  - OCI 返回 NotAuthenticated/401，表示认证信息没有通过。"
+        printf '%s\n' "    常见原因:"
+        printf '%s\n' "      1) config 中 fingerprint 和 OCI 控制台 API Key 指纹不一致"
+        printf '%s\n' "      2) key_file 指向的私钥和控制台上传的公钥不是一对"
+        printf '%s\n' "      3) user OCID 或 tenancy OCID 填错"
+        printf '%s\n' "      4) API 公钥没有上传到该 user 的 API Keys"
+        printf '%s\n' "      5) 私钥文件内容损坏，或复制时多了空格/换行"
+        printf '%s\n' "    建议处理:"
+        printf '%s\n' "      1) 进入 OCI 控制台 -> 用户设置 -> API 密钥"
+        printf '%s\n' "      2) 核对脚本配置里的 user、tenancy、fingerprint"
+        printf '%s\n' "      3) 确认 ${OCI_KEY_FILE_DEFAULT} 是对应 API 公钥的私钥"
+        printf '%s\n' "      4) 如果不确定，建议重新生成 API Key 并重新执行 [2] 初始化 OCI 配置"
     fi
 
     if [[ "$error_output" == *"InvalidConfig"* || "$error_output" == *"ConfigFileNotFound"* ]]; then
-        echo "  - OCI CLI 配置文件无效或未找到。"
-        echo "    建议重新执行 [2] 初始化 OCI 配置。"
+        printf '%s\n' "  - OCI CLI 配置文件无效或未找到。"
+        printf '%s\n' "    建议重新执行 [2] 初始化 OCI 配置。"
     fi
 
     if [[ "$error_output" == *"Could not find private key"* || "$error_output" == *"No such file"* ]]; then
-        echo "  - 私钥文件不存在或路径错误。"
-        echo "    请检查 config 中 key_file 是否指向真实存在的私钥文件。"
+        printf '%s\n' "  - 私钥文件不存在或路径错误。"
+        printf '%s\n' "    请检查 config 中 key_file 是否指向真实存在的私钥文件。"
     fi
 
     if [[ "$error_output" == *"ConnectionError"* || "$error_output" == *"NameResolutionError"* || "$error_output" == *"Failed to establish"* ]]; then
-        echo "  - 网络连接失败，可能是 DNS、代理、防火墙或网络不可达。"
-        echo "    请确认服务器可以访问 OCI API endpoint。"
+        printf '%s\n' "  - 网络连接失败，可能是 DNS、代理、防火墙或网络不可达。"
+        printf '%s\n' "    请确认服务器可以访问 OCI API endpoint。"
     fi
 
-    echo "----------------------------------------"
+    printf '%s\n' "----------------------------------------"
 }
 
 test_oci_connection() {
@@ -2770,7 +2782,7 @@ test_oci_connection() {
     namespace_output=$(oci os ns get --output json 2>&1)
     exit_code=$?
     if [[ $exit_code -eq 0 ]]; then
-        namespace=$(echo "$namespace_output" | jq -r '.data // empty' 2>/dev/null)
+        namespace=$(printf '%s\n' "$namespace_output" | jq -r '.data // empty' 2>/dev/null)
         if [[ -z "$namespace" || "$namespace" == "null" ]]; then
             namespace=$(oci os ns get --query 'data' --raw-output 2>/dev/null)
         fi
@@ -2791,9 +2803,9 @@ check_oci_environment() {
     local allow_auto_install="${1:-true}"
 
     show_header
-    echo -e "${BOLD}[1] 检查 OCI 环境${NC}"
-    echo "========================================"
-    echo ""
+    printf '%b\n' "${BOLD}[1] 检查 OCI 环境${NC}"
+    printf '%s\n' "========================================"
+    printf '%s\n' ""
 
     local all_ok=true
     local missing_oci="false"
@@ -2805,114 +2817,114 @@ check_oci_environment() {
     local missing_ssh_keygen="false"
 
     # 检查 OCI CLI
-    echo -n "检查 OCI CLI... "
+    printf '%s' "检查 OCI CLI... "
     if check_oci_cli; then
         local oci_version
         oci_version=$(oci --version 2>/dev/null | head -1)
-        echo -e "${GREEN}✓ 已安装${NC} ($oci_version)"
+        printf '%b\n' "${GREEN}✓ 已安装${NC} ($oci_version)"
     else
-        echo -e "${RED}✗ 未安装${NC}"
+        printf '%b\n' "${RED}✗ 未安装${NC}"
         all_ok=false
         missing_oci="true"
     fi
 
     # 检查 jq
-    echo -n "检查 jq... "
+    printf '%s' "检查 jq... "
     if command -v jq &> /dev/null; then
-        echo -e "${GREEN}✓ 已安装${NC}"
+        printf '%b\n' "${GREEN}✓ 已安装${NC}"
     else
-        echo -e "${YELLOW}✗ 未安装${NC}"
+        printf '%b\n' "${YELLOW}✗ 未安装${NC}"
         all_ok=false
         missing_jq="true"
     fi
 
     # 检查 curl
-    echo -n "检查 curl... "
+    printf '%s' "检查 curl... "
     if command -v curl &> /dev/null; then
-        echo -e "${GREEN}✓ 已安装${NC}"
+        printf '%b\n' "${GREEN}✓ 已安装${NC}"
     else
-        echo -e "${YELLOW}✗ 未安装${NC}"
+        printf '%b\n' "${YELLOW}✗ 未安装${NC}"
         all_ok=false
         missing_curl="true"
     fi
 
     # 检查 Python 3（OCI CLI 安装器需要）
-    echo -n "检查 python3... "
+    printf '%s' "检查 python3... "
     if command -v python3 &> /dev/null; then
-        echo -e "${GREEN}✓ 已安装${NC}"
+        printf '%b\n' "${GREEN}✓ 已安装${NC}"
     else
-        echo -e "${YELLOW}✗ 未安装${NC}"
+        printf '%b\n' "${YELLOW}✗ 未安装${NC}"
         all_ok=false
         missing_python3="true"
         missing_python3_venv="true"
     fi
 
     # 检查 Python venv（OCI CLI 安装器需要）
-    echo -n "检查 python3 venv... "
+    printf '%s' "检查 python3 venv... "
     if command -v python3 &> /dev/null && python3 -m venv --help >/dev/null 2>&1; then
-        echo -e "${GREEN}✓ 可用${NC}"
+        printf '%b\n' "${GREEN}✓ 可用${NC}"
     else
-        echo -e "${YELLOW}✗ 不可用${NC}"
+        printf '%b\n' "${YELLOW}✗ 不可用${NC}"
         all_ok=false
         missing_python3_venv="true"
     fi
 
     # 检查 column（可选）
-    echo -n "检查 column... "
+    printf '%s' "检查 column... "
     if command -v column &> /dev/null; then
-        echo -e "${GREEN}✓ 已安装${NC}"
+        printf '%b\n' "${GREEN}✓ 已安装${NC}"
     else
-        echo -e "${YELLOW}✗ 未安装${NC} (可选，将降级为普通文本显示)"
+        printf '%b\n' "${YELLOW}✗ 未安装${NC} (可选，将降级为普通文本显示)"
         missing_column="true"
     fi
 
     # 检查 ssh-keygen（自动生成实例 SSH 密钥需要）
-    echo -n "检查 ssh-keygen... "
+    printf '%s' "检查 ssh-keygen... "
     if command -v ssh-keygen &> /dev/null; then
-        echo -e "${GREEN}✓ 已安装${NC}"
+        printf '%b\n' "${GREEN}✓ 已安装${NC}"
     else
-        echo -e "${YELLOW}✗ 未安装${NC}"
+        printf '%b\n' "${YELLOW}✗ 未安装${NC}"
         all_ok=false
         missing_ssh_keygen="true"
     fi
 
     # 检查 OCI 配置
-    echo -n "检查 OCI 配置... "
+    printf '%s' "检查 OCI 配置... "
     if [[ -f "$OCI_CONFIG_FILE" ]]; then
-        echo -e "${GREEN}✓ 存在${NC} ($OCI_CONFIG_FILE)"
+        printf '%b\n' "${GREEN}✓ 存在${NC} ($OCI_CONFIG_FILE)"
     else
-        echo -e "${YELLOW}✗ 不存在${NC}"
+        printf '%b\n' "${YELLOW}✗ 不存在${NC}"
         all_ok=false
     fi
 
     # 检查私钥文件
-    echo -n "检查私钥文件... "
+    printf '%s' "检查私钥文件... "
     if [[ -f "$OCI_CONFIG_FILE" ]]; then
         local key_file
         key_file=$(grep "^key_file=" "$OCI_CONFIG_FILE" 2>/dev/null | cut -d'=' -f2 | head -1)
         key_file="${key_file/#\~/$HOME}"
         if [[ -f "$key_file" ]]; then
-            echo -e "${GREEN}✓ 存在${NC} ($key_file)"
+            printf '%b\n' "${GREEN}✓ 存在${NC} ($key_file)"
         else
-            echo -e "${YELLOW}✗ 不存在${NC} ($key_file)"
+            printf '%b\n' "${YELLOW}✗ 不存在${NC} ($key_file)"
         fi
     fi
 
     # 测试连接
     if [[ -f "$OCI_CONFIG_FILE" ]]; then
-        echo ""
-        echo -n "测试 OCI 连接... "
+        printf '%s\n' ""
+        printf '%s' "测试 OCI 连接... "
         if test_oci_connection; then
-            echo -e "${GREEN}✓ 成功${NC} (命名空间: $TEST_OCI_CONNECTION_NAMESPACE)"
+            printf '%b\n' "${GREEN}✓ 成功${NC} (命名空间: $TEST_OCI_CONNECTION_NAMESPACE)"
         else
-            echo -e "${RED}✗ 失败${NC}"
+            printf '%b\n' "${RED}✗ 失败${NC}"
             print_oci_error_detail "$TEST_OCI_CONNECTION_ERROR"
             print_oci_error_suggestions "$TEST_OCI_CONNECTION_ERROR"
             all_ok=false
         fi
     fi
 
-    echo ""
+    printf '%s\n' ""
     if $all_ok; then
         log_success "环境检查通过"
     else
@@ -2921,7 +2933,7 @@ check_oci_environment() {
 
     if [[ "$allow_auto_install" == "true" && ( "$missing_oci" == "true" || "$missing_jq" == "true" || "$missing_curl" == "true" || "$missing_column" == "true" || "$missing_python3" == "true" || "$missing_python3_venv" == "true" || "$missing_ssh_keygen" == "true" ) ]]; then
         prompt_install_missing_dependencies "$missing_oci" "$missing_jq" "$missing_curl" "$missing_column" "$missing_python3" "$missing_python3_venv" "$missing_ssh_keygen"
-        echo ""
+        printf '%s\n' ""
         log_info "依赖安装流程结束，正在重新检查环境..."
         sleep 1
         check_oci_environment "false"
@@ -2937,16 +2949,16 @@ check_oci_environment() {
 # ================================
 init_oci_config() {
     show_header
-    echo -e "${BOLD}[2] 初始化 OCI 配置${NC}"
-    echo "========================================"
-    echo ""
+    printf '%b\n' "${BOLD}[2] 初始化 OCI 配置${NC}"
+    printf '%s\n' "========================================"
+    printf '%s\n' ""
 
     # 检查现有配置
     local existing_user="" existing_fingerprint="" existing_tenancy=""
     local existing_region="" existing_key=""
 
     if [[ -f "$OCI_CONFIG_FILE" ]]; then
-        echo -e "${GREEN}✓ 检测到现有 OCI CLI 配置${NC}"
+        printf '%b\n' "${GREEN}✓ 检测到现有 OCI CLI 配置${NC}"
         # 读取现有配置
         while IFS= read -r line; do
             [[ "$line" =~ ^user= ]] && existing_user="${line#user=}"
@@ -2956,66 +2968,66 @@ init_oci_config() {
             [[ "$line" =~ ^key_file= ]] && existing_key="${line#key_file=}"
         done < "$OCI_CONFIG_FILE"
         existing_key="${existing_key/#\~/$HOME}"
-        echo ""
+        printf '%s\n' ""
     fi
 
-    echo -e "${YELLOW}请输入 OCI 配置信息（直接回车使用当前值）:${NC}"
-    echo ""
+    printf '%b\n' "${YELLOW}请输入 OCI 配置信息（直接回车使用当前值）:${NC}"
+    printf '%s\n' ""
 
     # 用户 OCID
     if [[ -n "$existing_user" ]]; then
-        echo -e "用户 OCID: ${CYAN}$existing_user${NC}"
+        printf '%b\n' "用户 OCID: ${CYAN}$existing_user${NC}"
         read -p "按回车保持，或输入新值: " user_input
         USER_OCID="${user_input:-$existing_user}"
     else
         read -p "用户 OCID: " USER_OCID
     fi
     while [[ -z "$USER_OCID" || ! "$USER_OCID" =~ ^ocid1\.user\.oc1\. ]]; do
-        echo -e "${RED}无效的用户 OCID，格式应为: ocid1.user.oc1...${NC}"
+        printf '%b\n' "${RED}无效的用户 OCID，格式应为: ocid1.user.oc1...${NC}"
         read -p "用户 OCID: " USER_OCID
     done
 
     # API 密钥指纹
     if [[ -n "$existing_fingerprint" ]]; then
-        echo -e "API 密钥指纹: ${CYAN}$existing_fingerprint${NC}"
+        printf '%b\n' "API 密钥指纹: ${CYAN}$existing_fingerprint${NC}"
         read -p "按回车保持，或输入新值: " fp_input
         FINGERPRINT="${fp_input:-$existing_fingerprint}"
     else
         read -p "API 密钥指纹 (例如: 12:34:56:78:90:ab:cd:ef): " FINGERPRINT
     fi
     while [[ -z "$FINGERPRINT" ]]; do
-        echo -e "${RED}指纹不能为空${NC}"
+        printf '%b\n' "${RED}指纹不能为空${NC}"
         read -p "API 密钥指纹: " FINGERPRINT
     done
 
     # 租户 OCID
     if [[ -n "$existing_tenancy" ]]; then
-        echo -e "租户 OCID: ${CYAN}$existing_tenancy${NC}"
+        printf '%b\n' "租户 OCID: ${CYAN}$existing_tenancy${NC}"
         read -p "按回车保持，或输入新值: " tenancy_input
         TENANCY_OCID="${tenancy_input:-$existing_tenancy}"
     else
         read -p "租户 OCID: " TENANCY_OCID
     fi
     while [[ -z "$TENANCY_OCID" || ! "$TENANCY_OCID" =~ ^ocid1\.tenancy\.oc1\. ]]; do
-        echo -e "${RED}无效的租户 OCID，格式应为: ocid1.tenancy.oc1...${NC}"
+        printf '%b\n' "${RED}无效的租户 OCID，格式应为: ocid1.tenancy.oc1...${NC}"
         read -p "租户 OCID: " TENANCY_OCID
     done
 
     # 选择区域
-    echo ""
-    echo "常用区域:"
-    echo "  1) ap-chuncheon-1    (春川)"
-    echo "  2) ap-seoul-1        (首尔)"
-    echo "  3) ap-tokyo-1        (东京)"
-    echo "  4) ap-osaka-1        (大阪)"
-    echo "  5) us-ashburn-1      (阿什本)"
-    echo "  6) us-phoenix-1      (凤凰城)"
-    echo "  7) eu-frankfurt-1    (法兰克福)"
-    echo "  8) 其他 (手动输入)"
-    echo ""
+    printf '%s\n' ""
+    printf '%s\n' "常用区域:"
+    printf '%s\n' "  1) ap-chuncheon-1    (春川)"
+    printf '%s\n' "  2) ap-seoul-1        (首尔)"
+    printf '%s\n' "  3) ap-tokyo-1        (东京)"
+    printf '%s\n' "  4) ap-osaka-1        (大阪)"
+    printf '%s\n' "  5) us-ashburn-1      (阿什本)"
+    printf '%s\n' "  6) us-phoenix-1      (凤凰城)"
+    printf '%s\n' "  7) eu-frankfurt-1    (法兰克福)"
+    printf '%s\n' "  8) 其他 (手动输入)"
+    printf '%s\n' ""
 
     if [[ -n "$existing_region" ]]; then
-        echo -e "当前区域: ${CYAN}$existing_region${NC}"
+        printf '%b\n' "当前区域: ${CYAN}$existing_region${NC}"
         read -p "选择区域 (1-8)，或按回车保持: " region_choice
         if [[ -z "$region_choice" ]]; then
             REGION="$existing_region"
@@ -3046,34 +3058,34 @@ init_oci_config() {
     fi
 
     # 私钥文件
-    echo ""
+    printf '%s\n' ""
     local default_key="${existing_key:-$OCI_KEY_FILE_DEFAULT}"
-    echo -e "私钥文件路径: ${CYAN}$default_key${NC}"
+    printf '%b\n' "私钥文件路径: ${CYAN}$default_key${NC}"
     read -p "按回车保持，或输入新路径: " key_input
     KEY_FILE="${key_input:-$default_key}"
     KEY_FILE="${KEY_FILE/#\~/$HOME}"
 
     # 检查私钥文件
     if [[ ! -f "$KEY_FILE" ]]; then
-        echo -e "${YELLOW}警告: 私钥文件不存在: $KEY_FILE${NC}"
-        echo "请确保稍后将私钥文件放置到正确位置"
+        printf '%b\n' "${YELLOW}警告: 私钥文件不存在: $KEY_FILE${NC}"
+        printf '%s\n' "请确保稍后将私钥文件放置到正确位置"
     fi
 
     # 配置摘要
-    echo ""
-    echo "========================================"
-    echo -e "${BOLD}配置摘要:${NC}"
-    echo "  用户 OCID:     $USER_OCID"
-    echo "  租户 OCID:     $TENANCY_OCID"
-    echo "  密钥指纹:      $FINGERPRINT"
-    echo "  区域:          $REGION"
-    echo "  私钥文件:      $KEY_FILE"
-    echo "========================================"
+    printf '%s\n' ""
+    printf '%s\n' "========================================"
+    printf '%b\n' "${BOLD}配置摘要:${NC}"
+    printf '%s\n' "  用户 OCID:     $USER_OCID"
+    printf '%s\n' "  租户 OCID:     $TENANCY_OCID"
+    printf '%s\n' "  密钥指纹:      $FINGERPRINT"
+    printf '%s\n' "  区域:          $REGION"
+    printf '%s\n' "  私钥文件:      $KEY_FILE"
+    printf '%s\n' "========================================"
 
     read -p "确认保存配置? [Y/n]: " -r
     [[ -z "$REPLY" ]] && REPLY="y"
-    echo
-
+    printf '
+'
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         # 创建 OCI 配置目录
         mkdir -p "$(dirname "$OCI_CONFIG_FILE")"
@@ -3093,7 +3105,7 @@ EOF
         log_success "OCI CLI 配置已保存到: $OCI_CONFIG_FILE"
 
         # 验证连接
-        echo ""
+        printf '%s\n' ""
         log_info "验证 OCI 连接..."
         if test_oci_connection; then
             log_success "OCI 连接成功，命名空间: $TEST_OCI_CONNECTION_NAMESPACE"
@@ -3103,7 +3115,7 @@ EOF
             print_oci_error_suggestions "$TEST_OCI_CONNECTION_ERROR"
         fi
     else
-        echo "配置已取消"
+        printf '%s\n' "配置已取消"
     fi
 
     pause
@@ -3114,9 +3126,9 @@ EOF
 # ================================
 view_oci_config() {
     show_header
-    echo -e "${BOLD}[3] 查看 OCI 配置${NC}"
-    echo "========================================"
-    echo ""
+    printf '%b\n' "${BOLD}[3] 查看 OCI 配置${NC}"
+    printf '%s\n' "========================================"
+    printf '%s\n' ""
 
     if [[ ! -f "$OCI_CONFIG_FILE" ]]; then
         log_error "OCI 配置文件不存在"
@@ -3125,13 +3137,13 @@ view_oci_config() {
         return 1
     fi
 
-    echo -e "${BOLD}OCI CLI 配置文件内容:${NC}"
-    echo "文件路径: $OCI_CONFIG_FILE"
-    echo ""
-    echo "----------------------------------------"
+    printf '%b\n' "${BOLD}OCI CLI 配置文件内容:${NC}"
+    printf '%s\n' "文件路径: $OCI_CONFIG_FILE"
+    printf '%s\n' ""
+    printf '%s\n' "----------------------------------------"
     cat "$OCI_CONFIG_FILE"
-    echo "----------------------------------------"
-    echo ""
+    printf '%s\n' "----------------------------------------"
+    printf '%s\n' ""
 
     # 测试连接
     log_info "测试 OCI 连接..."
@@ -3151,9 +3163,9 @@ view_oci_config() {
 # ================================
 list_instances() {
     show_header
-    echo -e "${BOLD}[4] 列出实例${NC}"
-    echo "========================================"
-    echo ""
+    printf '%b\n' "${BOLD}[4] 列出实例${NC}"
+    printf '%s\n' "========================================"
+    printf '%s\n' ""
 
     if ! check_oci_cli; then
         pause
@@ -3191,7 +3203,7 @@ list_instances() {
 
     # 检查是否有实例
     local instance_count
-    instance_count=$(echo "$instances_json" | jq -r '.data | length' 2>/dev/null)
+    instance_count=$(printf '%s\n' "$instances_json" | jq -r '.data | length' 2>/dev/null)
 
     if [[ -z "$instance_count" || "$instance_count" -eq 0 ]]; then
         log_warn "未找到任何实例"
@@ -3199,14 +3211,14 @@ list_instances() {
         return 0
     fi
 
-    echo ""
-    echo -e "${CYAN}找到 $instance_count 个实例，正在获取详细信息...${NC}"
-    echo ""
+    printf '%s\n' ""
+    printf '%b\n' "${CYAN}找到 $instance_count 个实例，正在获取详细信息...${NC}"
+    printf '%s\n' ""
 
     # 使用临时文件收集表格数据
     local table_data=$(mktemp)
-    echo -e "序号\t名称\t状态\tOCPU\t内存(GB)\t形状\t实例 OCID" > "$table_data"
-    echo -e "----\t----\t------\t------\t----------\t------\t--------------------------------------------------" >> "$table_data"
+    printf '%b\n' "序号\t名称\t状态\tOCPU\t内存(GB)\t形状\t实例 OCID" > "$table_data"
+    printf '%b\n' "----\t----\t------\t------\t----------\t------\t--------------------------------------------------" >> "$table_data"
 
     # 存储所有实例 OCID 用于后续选择
     declare -a INSTANCE_OCIDS
@@ -3223,29 +3235,29 @@ list_instances() {
 
         if [[ -n "$detail_json" ]]; then
             local name state shape ocpus memory
-            name=$(echo "$detail_json" | jq -r '.data["display-name"] // "N/A"')
-            state=$(echo "$detail_json" | jq -r '.data["lifecycle-state"] // "N/A"')
-            shape=$(echo "$detail_json" | jq -r '.data.shape // "N/A"')
-            ocpus=$(echo "$detail_json" | jq -r '.data["shape-config"].ocpus // "N/A"')
-            memory=$(echo "$detail_json" | jq -r '.data["shape-config"]["memory-in-gbs"] // "N/A"')
+            name=$(printf '%s\n' "$detail_json" | jq -r '.data["display-name"] // "N/A"')
+            state=$(printf '%s\n' "$detail_json" | jq -r '.data["lifecycle-state"] // "N/A"')
+            shape=$(printf '%s\n' "$detail_json" | jq -r '.data.shape // "N/A"')
+            ocpus=$(printf '%s\n' "$detail_json" | jq -r '.data["shape-config"].ocpus // "N/A"')
+            memory=$(printf '%s\n' "$detail_json" | jq -r '.data["shape-config"]["memory-in-gbs"] // "N/A"')
             ocid_short="${instance_ocid:0:47}..."
 
             # 添加到表格（不带颜色代码）
-            echo -e "$idx\t$name\t$state\t$ocpus\t$memory\t$shape\t$ocid_short" >> "$table_data"
+            printf '%b\n' "$idx\t$name\t$state\t$ocpus\t$memory\t$shape\t$ocid_short" >> "$table_data"
         else
-            echo -e "$idx\t获取失败\tN/A\tN/A\tN/A\tN/A\tN/A" >> "$table_data"
+            printf '%b\n' "$idx\t获取失败\tN/A\tN/A\tN/A\tN/A\tN/A" >> "$table_data"
         fi
-    done < <(echo "$instances_json" | jq -r '.data[].id' 2>/dev/null)
+    done < <(printf '%s\n' "$instances_json" | jq -r '.data[].id' 2>/dev/null)
 
     # 显示表格（自动对齐）
     format_tabular_file "$table_data"
     rm -f "$table_data"
 
-    echo ""
+    printf '%s\n' ""
 
     # 提供选择功能
-    echo -e "${CYAN}提示: 输入上方实例列表左侧的序号查看完整信息，或按回车返回${NC}"
-    echo ""
+    printf '%b\n' "${CYAN}提示: 输入上方实例列表左侧的序号查看完整信息，或按回车返回${NC}"
+    printf '%s\n' ""
 
     read -p "请输入上方实例列表左侧的序号 [1-${instance_count}]，或按回车返回: " choice
 
@@ -3265,58 +3277,58 @@ list_instances() {
 
         if [[ -n "$selected_detail" ]]; then
             local selected_name selected_state selected_shape selected_ocpus selected_memory
-            selected_name=$(echo "$selected_detail" | jq -r '.data["display-name"] // "N/A"')
-            selected_state=$(echo "$selected_detail" | jq -r '.data["lifecycle-state"] // "N/A"')
-            selected_shape=$(echo "$selected_detail" | jq -r '.data.shape // "N/A"')
-            selected_ocpus=$(echo "$selected_detail" | jq -r '.data["shape-config"].ocpus // "N/A"')
-            selected_memory=$(echo "$selected_detail" | jq -r '.data["shape-config"]["memory-in-gbs"] // "N/A"')
+            selected_name=$(printf '%s\n' "$selected_detail" | jq -r '.data["display-name"] // "N/A"')
+            selected_state=$(printf '%s\n' "$selected_detail" | jq -r '.data["lifecycle-state"] // "N/A"')
+            selected_shape=$(printf '%s\n' "$selected_detail" | jq -r '.data.shape // "N/A"')
+            selected_ocpus=$(printf '%s\n' "$selected_detail" | jq -r '.data["shape-config"].ocpus // "N/A"')
+            selected_memory=$(printf '%s\n' "$selected_detail" | jq -r '.data["shape-config"]["memory-in-gbs"] // "N/A"')
 
             # 第一部分：关键信息
-            echo ""
-            echo -e "${BOLD}========================================${NC}"
-            echo -e "${BOLD}实例关键信息 #${choice}${NC}"
-            echo -e "${BOLD}========================================${NC}"
+            printf '%s\n' ""
+            printf '%b\n' "${BOLD}========================================${NC}"
+            printf '%b\n' "${BOLD}实例关键信息 #${choice}${NC}"
+            printf '%b\n' "${BOLD}========================================${NC}"
             # 使用表格格式显示
             {
-                echo -e "名称\t$selected_name"
-                echo -e "状态\t$selected_state"
-                echo -e "OCPU\t$selected_ocpus"
-                echo -e "内存(GB)\t$selected_memory"
-                echo -e "形状\t$selected_shape"
-                echo -e "OCID\t$selected_ocid"
+                printf '%b\n' "名称\t$selected_name"
+                printf '%b\n' "状态\t$selected_state"
+                printf '%b\n' "OCPU\t$selected_ocpus"
+                printf '%b\n' "内存(GB)\t$selected_memory"
+                printf '%b\n' "形状\t$selected_shape"
+                printf '%b\n' "OCID\t$selected_ocid"
             } | format_tabular_output
-            echo ""
+            printf '%s\n' ""
 
             # 第二部分：完整 JSON
             read -p "是否查看完整 JSON 信息? [Y/n]: " view_json
             [[ -z "$view_json" ]] && view_json="y"
 
             if [[ $view_json =~ ^[Yy]$ ]]; then
-                echo ""
-                echo -e "${BOLD}========================================${NC}"
-                echo -e "${BOLD}完整 JSON 信息${NC}"
-                echo -e "${BOLD}========================================${NC}"
-                echo "$selected_detail" | jq '.'
-                echo ""
+                printf '%s\n' ""
+                printf '%b\n' "${BOLD}========================================${NC}"
+                printf '%b\n' "${BOLD}完整 JSON 信息${NC}"
+                printf '%b\n' "${BOLD}========================================${NC}"
+                printf '%s\n' "$selected_detail" | jq '.'
+                printf '%s\n' ""
 
                 read -p "是否保存到文件? [Y/n]: " save_json
                 [[ -z "$save_json" ]] && save_json="y"
 
                 if [[ $save_json =~ ^[Yy]$ ]]; then
                     local json_file="instance_${selected_name}_$(date +%Y%m%d-%H%M%S).json"
-                    echo "$selected_detail" > "$json_file"
+                    printf '%s\n' "$selected_detail" > "$json_file"
                     log_success "已保存到: $json_file"
-                    echo ""
+                    printf '%s\n' ""
                 fi
             fi
         else
-            echo -e "${RED}获取实例详情失败${NC}"
+            printf '%b\n' "${RED}获取实例详情失败${NC}"
         fi
     else
-        echo -e "${RED}无效选择，请输入 1-${instance_count} 之间的数字${NC}"
+        printf '%b\n' "${RED}无效选择，请输入 1-${instance_count} 之间的数字${NC}"
     fi
 
-    echo ""
+    printf '%s\n' ""
     pause
 }
 
@@ -3325,9 +3337,9 @@ list_instances() {
 # ================================
 stop_instance() {
     show_header
-    echo -e "${BOLD}[5] 停止实例${NC}"
-    echo "========================================"
-    echo ""
+    printf '%b\n' "${BOLD}[5] 停止实例${NC}"
+    printf '%s\n' "========================================"
+    printf '%s\n' ""
 
     if ! check_oci_cli; then
         pause
@@ -3340,10 +3352,10 @@ stop_instance() {
     fi
 
     # 交互式输入实例 ID
-    echo -e "${YELLOW}请输入要停止的实例 ID:${NC}"
+    printf '%b\n' "${YELLOW}请输入要停止的实例 ID:${NC}"
     read -p "实例 OCID: " INSTANCE_OCID
     while [[ -z "$INSTANCE_OCID" || ! "$INSTANCE_OCID" =~ ^ocid1\.instance\.oc1\. ]]; do
-        echo -e "${RED}无效的实例 OCID，格式应为: ocid1.instance.oc1...${NC}"
+        printf '%b\n' "${RED}无效的实例 OCID，格式应为: ocid1.instance.oc1...${NC}"
         read -p "实例 OCID: " INSTANCE_OCID
     done
 
@@ -3356,21 +3368,21 @@ stop_instance() {
 
     if [[ -z "$current_info" ]]; then
         local name state
-        name=$(echo "$current_info" | jq -r '.data["display-name"] // "N/A"')
-        state=$(echo "$current_info" | jq -r '.data["lifecycle-state"] // "N/A"')
-        echo ""
-        echo "当前实例信息:"
-        echo "  名称: $name"
-        echo "  状态: $state"
+        name=$(printf '%s\n' "$current_info" | jq -r '.data["display-name"] // "N/A"')
+        state=$(printf '%s\n' "$current_info" | jq -r '.data["lifecycle-state"] // "N/A"')
+        printf '%s\n' ""
+        printf '%s\n' "当前实例信息:"
+        printf '%s\n' "  名称: $name"
+        printf '%s\n' "  状态: $state"
     fi
 
-    echo ""
+    printf '%s\n' ""
     read -p "确认停止实例? [Y/n]: " -r
     [[ -z "$REPLY" ]] && REPLY="y"
-    echo
-
+    printf '
+'
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo "操作已取消"
+        printf '%s\n' "操作已取消"
         pause
         return 0
     fi
@@ -3402,16 +3414,16 @@ stop_instance() {
                 break
             fi
 
-            echo -n "."
+            printf '%s' "."
             sleep 5
             ((waited += 5))
         done
-        echo ""
+        printf '%s\n' ""
     else
         log_error "停止实例失败: $result"
     fi
 
-    echo ""
+    printf '%s\n' ""
     pause
 }
 
@@ -3420,9 +3432,9 @@ stop_instance() {
 # ================================
 start_instance() {
     show_header
-    echo -e "${BOLD}[6] 启动实例${NC}"
-    echo "========================================"
-    echo ""
+    printf '%b\n' "${BOLD}[6] 启动实例${NC}"
+    printf '%s\n' "========================================"
+    printf '%s\n' ""
 
     if ! check_oci_cli; then
         pause
@@ -3435,10 +3447,10 @@ start_instance() {
     fi
 
     # 交互式输入实例 ID
-    echo -e "${YELLOW}请输入要启动的实例 ID:${NC}"
+    printf '%b\n' "${YELLOW}请输入要启动的实例 ID:${NC}"
     read -p "实例 OCID: " INSTANCE_OCID
     while [[ -z "$INSTANCE_OCID" || ! "$INSTANCE_OCID" =~ ^ocid1\.instance\.oc1\. ]]; do
-        echo -e "${RED}无效的实例 OCID，格式应为: ocid1.instance.oc1...${NC}"
+        printf '%b\n' "${RED}无效的实例 OCID，格式应为: ocid1.instance.oc1...${NC}"
         read -p "实例 OCID: " INSTANCE_OCID
     done
 
@@ -3451,21 +3463,21 @@ start_instance() {
 
     if [[ -n "$current_info" ]]; then
         local name state
-        name=$(echo "$current_info" | jq -r '.data["display-name"] // "N/A"')
-        state=$(echo "$current_info" | jq -r '.data["lifecycle-state"] // "N/A"')
-        echo ""
-        echo "当前实例信息:"
-        echo "  名称: $name"
-        echo "  状态: $state"
+        name=$(printf '%s\n' "$current_info" | jq -r '.data["display-name"] // "N/A"')
+        state=$(printf '%s\n' "$current_info" | jq -r '.data["lifecycle-state"] // "N/A"')
+        printf '%s\n' ""
+        printf '%s\n' "当前实例信息:"
+        printf '%s\n' "  名称: $name"
+        printf '%s\n' "  状态: $state"
     fi
 
-    echo ""
+    printf '%s\n' ""
     read -p "确认启动实例? [Y/n]: " -r
     [[ -z "$REPLY" ]] && REPLY="y"
-    echo
-
+    printf '
+'
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo "操作已取消"
+        printf '%s\n' "操作已取消"
         pause
         return 0
     fi
@@ -3497,16 +3509,16 @@ start_instance() {
                 break
             fi
 
-            echo -n "."
+            printf '%s' "."
             sleep 5
             ((waited += 5))
         done
-        echo ""
+        printf '%s\n' ""
     else
         log_error "启动实例失败: $result"
     fi
 
-    echo ""
+    printf '%s\n' ""
     pause
 }
 
@@ -3515,9 +3527,9 @@ start_instance() {
 # ================================
 update_instance_config_direct() {
     show_header
-    echo -e "${BOLD}[7] 直接更新实例配置${NC}"
-    echo "========================================"
-    echo ""
+    printf '%b\n' "${BOLD}[7] 直接更新实例配置${NC}"
+    printf '%s\n' "========================================"
+    printf '%s\n' ""
 
     if ! check_oci_cli; then
         pause
@@ -3530,18 +3542,18 @@ update_instance_config_direct() {
     fi
 
     # 交互式输入参数
-    echo -e "${YELLOW}请输入更新参数:${NC}"
-    echo ""
+    printf '%b\n' "${YELLOW}请输入更新参数:${NC}"
+    printf '%s\n' ""
 
     # 实例 ID（如果已经设置则跳过）
     if [[ -z "$INSTANCE_OCID" ]]; then
         read -p "实例 OCID: " INSTANCE_OCID
         while [[ -z "$INSTANCE_OCID" || ! "$INSTANCE_OCID" =~ ^ocid1\.instance\.oc1\. ]]; do
-            echo -e "${RED}无效的实例 OCID，格式应为: ocid1.instance.oc1...${NC}"
+            printf '%b\n' "${RED}无效的实例 OCID，格式应为: ocid1.instance.oc1...${NC}"
             read -p "实例 OCID: " INSTANCE_OCID
         done
     else
-        echo -e "${GREEN}✓${NC} 实例 OCID: ${INSTANCE_OCID:0:30}..."
+        printf '%b\n' "${GREEN}✓${NC} 实例 OCID: ${INSTANCE_OCID:0:30}..."
     fi
 
     # 目标 OCPU
@@ -3570,33 +3582,33 @@ update_instance_config_direct() {
 
     if [[ -n "$current_info" ]]; then
         local name state current_ocpus current_memory shape
-        name=$(echo "$current_info" | jq -r '.data["display-name"] // "N/A"')
-        state=$(echo "$current_info" | jq -r '.data["lifecycle-state"] // "N/A"')
-        current_ocpus=$(echo "$current_info" | jq -r '.data["shape-config"].ocpus // "N/A"')
-        current_memory=$(echo "$current_info" | jq -r '.data["shape-config"]["memory-in-gbs"] // "N/A"')
-        shape=$(echo "$current_info" | jq -r '.data.shape // "N/A"')
+        name=$(printf '%s\n' "$current_info" | jq -r '.data["display-name"] // "N/A"')
+        state=$(printf '%s\n' "$current_info" | jq -r '.data["lifecycle-state"] // "N/A"')
+        current_ocpus=$(printf '%s\n' "$current_info" | jq -r '.data["shape-config"].ocpus // "N/A"')
+        current_memory=$(printf '%s\n' "$current_info" | jq -r '.data["shape-config"]["memory-in-gbs"] // "N/A"')
+        shape=$(printf '%s\n' "$current_info" | jq -r '.data.shape // "N/A"')
 
-        echo ""
-        echo "当前实例信息:"
-        echo "  名称: $name"
-        echo "  状态: $state"
-        echo "  形状: $shape"
-        echo "  当前 OCPU: $current_ocpus"
-        echo "  当前内存: ${current_memory} GB"
-        echo ""
-        echo "目标配置:"
-        echo "  目标 OCPU: $TARGET_OCPUS"
-        echo "  目标内存: ${TARGET_MEMORY} GB"
-        echo "  请求间隔: ${REQUEST_INTERVAL} 秒"
+        printf '%s\n' ""
+        printf '%s\n' "当前实例信息:"
+        printf '%s\n' "  名称: $name"
+        printf '%s\n' "  状态: $state"
+        printf '%s\n' "  形状: $shape"
+        printf '%s\n' "  当前 OCPU: $current_ocpus"
+        printf '%s\n' "  当前内存: ${current_memory} GB"
+        printf '%s\n' ""
+        printf '%s\n' "目标配置:"
+        printf '%s\n' "  目标 OCPU: $TARGET_OCPUS"
+        printf '%s\n' "  目标内存: ${TARGET_MEMORY} GB"
+        printf '%s\n' "  请求间隔: ${REQUEST_INTERVAL} 秒"
     fi
 
-    echo ""
+    printf '%s\n' ""
     read -p "确认执行直接更新? [Y/n]: " -r
     [[ -z "$REPLY" ]] && REPLY="y"
-    echo
-
+    printf '
+'
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo "操作已取消"
+        printf '%s\n' "操作已取消"
         pause
         return 0
     fi
@@ -3618,8 +3630,8 @@ resize_instance_boot_volume() {
         return 1
     fi
 
-    compartment_id=$(echo "$instance_json" | jq -r '.data["compartment-id"] // empty')
-    availability_domain=$(echo "$instance_json" | jq -r '.data["availability-domain"] // empty')
+    compartment_id=$(printf '%s\n' "$instance_json" | jq -r '.data["compartment-id"] // empty')
+    availability_domain=$(printf '%s\n' "$instance_json" | jq -r '.data["availability-domain"] // empty')
     if [[ -z "$compartment_id" || -z "$availability_domain" ]]; then
         log_warn "无法读取实例区间或可用性域，跳过启动盘扩容"
         return 1
@@ -3632,7 +3644,7 @@ resize_instance_boot_volume() {
         --instance-id "$instance_ocid" \
         --all \
         --output json 2>/dev/null)
-    boot_volume_id=$(echo "$attachment_json" | jq -r '.data[0]["boot-volume-id"] // empty' 2>/dev/null)
+    boot_volume_id=$(printf '%s\n' "$attachment_json" | jq -r '.data[0]["boot-volume-id"] // empty' 2>/dev/null)
     if [[ -z "$boot_volume_id" ]]; then
         log_warn "未找到实例启动盘，跳过启动盘扩容"
         return 1
@@ -3667,15 +3679,15 @@ beginner_update_instance() {
 
     load_beginner_defaults
 
-    echo ""
-    echo -e "${BOLD}一键修改实例配置${NC}"
-    echo "----------------------------------------"
-    echo "默认配置:"
-    echo "  OCPU:       ${BEGINNER_UPDATE_OCPUS_DEFAULT}"
-    echo "  内存:       ${BEGINNER_UPDATE_MEMORY_GB_DEFAULT} GB"
-    echo "  启动盘:     ${BEGINNER_UPDATE_BOOT_VOLUME_GB_DEFAULT} GB"
-    echo "  执行方式:   直接更新 OCPU/内存，并尝试在线扩容启动盘"
-    echo ""
+    printf '%s\n' ""
+    printf '%b\n' "${BOLD}一键修改实例配置${NC}"
+    printf '%s\n' "----------------------------------------"
+    printf '%s\n' "默认配置:"
+    printf '%s\n' "  OCPU:       ${BEGINNER_UPDATE_OCPUS_DEFAULT}"
+    printf '%s\n' "  内存:       ${BEGINNER_UPDATE_MEMORY_GB_DEFAULT} GB"
+    printf '%s\n' "  启动盘:     ${BEGINNER_UPDATE_BOOT_VOLUME_GB_DEFAULT} GB"
+    printf '%s\n' "  执行方式:   直接更新 OCPU/内存，并尝试在线扩容启动盘"
+    printf '%s\n' ""
 
     read_instance_list_choice choice "$instance_count"
     if ! is_valid_list_choice "$choice" "$instance_count"; then
@@ -3699,13 +3711,13 @@ beginner_update_instance() {
         return 1
     fi
 
-    echo ""
-    echo "即将执行:"
-    echo "  实例:       ${selected_ocid:0:50}..."
-    echo "  OCPU:       $target_ocpus"
-    echo "  内存:       ${target_memory} GB"
-    echo "  启动盘:     ${target_boot_volume} GB"
-    echo ""
+    printf '%s\n' ""
+    printf '%s\n' "即将执行:"
+    printf '%s\n' "  实例:       ${selected_ocid:0:50}..."
+    printf '%s\n' "  OCPU:       $target_ocpus"
+    printf '%s\n' "  内存:       ${target_memory} GB"
+    printf '%s\n' "  启动盘:     ${target_boot_volume} GB"
+    printf '%s\n' ""
     read -p "确认一键修改? [Y/n]: " -r
     [[ -z "$REPLY" ]] && REPLY="y"
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
@@ -3729,12 +3741,12 @@ beginner_update_instance() {
         log_success "OCPU/内存更新命令执行成功"
     else
         log_error "OCPU/内存更新失败，将创建后台任务自动重试"
-        echo "$update_result"
+        printf '%s\n' "$update_result"
         create_background_task "direct_update_instance" "$selected_ocid" "$target_ocpus" "$target_memory" "0" "$request_interval" "true"
     fi
 
     resize_instance_boot_volume "$selected_ocid" "$target_boot_volume" || true
-    echo ""
+    printf '%s\n' ""
     log_success "一键修改实例配置流程已完成"
     pause
 }
@@ -3747,9 +3759,9 @@ generate_update_template() {
     local output_file="${2:-update_instance_config.json}"
 
     show_header
-    echo -e "${BOLD}生成更新配置模板${NC}"
-    echo "========================================"
-    echo ""
+    printf '%b\n' "${BOLD}生成更新配置模板${NC}"
+    printf '%s\n' "========================================"
+    printf '%s\n' ""
 
     if ! check_oci_cli; then
         pause
@@ -3760,16 +3772,16 @@ generate_update_template() {
     if [[ -z "$instance_ocid" ]]; then
         read -p "请输入实例 OCID: " instance_ocid
         while [[ -z "$instance_ocid" || ! "$instance_ocid" =~ ^ocid1\.instance\.oc1\. ]]; do
-            echo -e "${RED}无效的实例 OCID，格式应为: ocid1.instance.oc1...${NC}"
+            printf '%b\n' "${RED}无效的实例 OCID，格式应为: ocid1.instance.oc1...${NC}"
             read -p "请输入实例 OCID: " instance_ocid
         done
     fi
 
-    echo ""
-    echo "模板类型:"
-    echo "  1) 精简模板            (仅包含更新必需字段)"
-    echo "  2) 完整模板            (包含所有可用字段)"
-    echo ""
+    printf '%s\n' ""
+    printf '%s\n' "模板类型:"
+    printf '%s\n' "  1) 精简模板            (仅包含更新必需字段)"
+    printf '%s\n' "  2) 完整模板            (包含所有可用字段)"
+    printf '%s\n' ""
     read -p "请选择模板类型 [默认: 1]: " template_type
     template_type="${template_type:-1}"
 
@@ -3785,14 +3797,14 @@ generate_update_template() {
 
         if [[ -n "$current_info" ]]; then
             local current_ocpus current_memory current_shape
-            current_ocpus=$(echo "$current_info" | jq -r '.data["shape-config"].ocpus // 1')
-            current_memory=$(echo "$current_info" | jq -r '.data["shape-config"]["memory-in-gbs"] // 6')
-            current_shape=$(echo "$current_info" | jq -r '.data.shape // "VM.Standard.A1.Flex"')
+            current_ocpus=$(printf '%s\n' "$current_info" | jq -r '.data["shape-config"].ocpus // 1')
+            current_memory=$(printf '%s\n' "$current_info" | jq -r '.data["shape-config"]["memory-in-gbs"] // 6')
+            current_shape=$(printf '%s\n' "$current_info" | jq -r '.data.shape // "VM.Standard.A1.Flex"')
 
             # 询问目标配置
-            echo ""
-            echo "当前配置: $current_ocpus OCPU, ${current_memory} GB 内存"
-            echo ""
+            printf '%s\n' ""
+            printf '%s\n' "当前配置: $current_ocpus OCPU, ${current_memory} GB 内存"
+            printf '%s\n' ""
             read -p "目标 OCPU 数量 [默认: $current_ocpus]: " target_ocpus
             target_ocpus="${target_ocpus:-$current_ocpus}"
             read -p "目标内存 (GB) [默认: $current_memory]: " target_memory
@@ -3820,23 +3832,23 @@ EOF
             --generate-full-command-json-input > "$output_file" 2>/dev/null; then
 
             log_success "完整配置模板已生成: $output_file"
-            echo ""
-            echo -e "${CYAN}提示: 此模板包含所有可用参数。您需要修改以下内容:${NC}"
-            echo "  1. 将 'string' 占位符改为实际值或删除该字段"
-            echo "  2. 将 'ALLOW_DOWNTIME|AVOID_DOWNTIME' 改为 ALLOW_DOWNTIME 或 AVOID_DOWNTIME"
-            echo "  3. 删除不需要的字段"
+            printf '%s\n' ""
+            printf '%b\n' "${CYAN}提示: 此模板包含所有可用参数。您需要修改以下内容:${NC}"
+            printf '%s\n' "  1. 将 'string' 占位符改为实际值或删除该字段"
+            printf '%s\n' "  2. 将 'ALLOW_DOWNTIME|AVOID_DOWNTIME' 改为 ALLOW_DOWNTIME 或 AVOID_DOWNTIME"
+            printf '%s\n' "  3. 删除不需要的字段"
         else
             log_error "生成配置模板失败"
             return 1
         fi
     fi
 
-    echo ""
-    echo -e "${BOLD}模板内容:${NC}"
-    echo "----------------------------------------"
+    printf '%s\n' ""
+    printf '%b\n' "${BOLD}模板内容:${NC}"
+    printf '%s\n' "----------------------------------------"
     jq '.' "$output_file" 2>/dev/null | head -30
-    echo "----------------------------------------"
-    echo ""
+    printf '%s\n' "----------------------------------------"
+    printf '%s\n' ""
 
     read -p "是否立即编辑此文件? [Y/n]: " edit_now
     [[ -z "$edit_now" ]] && edit_now="y"
@@ -3865,11 +3877,11 @@ update_instance_from_file() {
     local mode="${1:-direct}"  # direct 或 full
     local config_file=""
 
-    echo ""
-    echo -e "${BOLD}========================================${NC}"
-    echo -e "${BOLD}使用配置文件更新${NC}"
-    echo -e "${BOLD}========================================${NC}"
-    echo ""
+    printf '%s\n' ""
+    printf '%b\n' "${BOLD}========================================${NC}"
+    printf '%b\n' "${BOLD}使用配置文件更新${NC}"
+    printf '%b\n' "${BOLD}========================================${NC}"
+    printf '%s\n' ""
 
     if ! check_oci_cli; then
         pause
@@ -3877,7 +3889,7 @@ update_instance_from_file() {
     fi
 
     # 列出当前目录下的 JSON 配置文件
-    echo -e "${CYAN}当前目录下的配置文件:${NC}"
+    printf '%b\n' "${CYAN}当前目录下的配置文件:${NC}"
     local json_files=()
     while IFS= read -r -d '' file; do
         json_files+=("$file")
@@ -3885,12 +3897,12 @@ update_instance_from_file() {
 
     if [[ ${#json_files[@]} -eq 0 ]]; then
         log_warn "未找到配置文件 (*.json)"
-        echo ""
-        echo "选项:"
-        echo "  1) 生成新的配置模板"
-        echo "  2) 手动输入配置文件路径"
-        echo "  0) 返回"
-        echo ""
+        printf '%s\n' ""
+        printf '%s\n' "选项:"
+        printf '%s\n' "  1) 生成新的配置模板"
+        printf '%s\n' "  2) 手动输入配置文件路径"
+        printf '%s\n' "  0) 返回"
+        printf '%s\n' ""
         read -p "请选择: " choice
 
         case $choice in
@@ -3914,12 +3926,12 @@ update_instance_from_file() {
                 ;;
         esac
     else
-        echo ""
+        printf '%s\n' ""
         for i in "${!json_files[@]}"; do
-            echo "  $((i+1))) ${json_files[$i]#./}"
+            printf '%s\n' "  $((i+1))) ${json_files[$i]#./}"
         done
-        echo "  0) 返回"
-        echo ""
+        printf '%s\n' "  0) 返回"
+        printf '%s\n' ""
         read -p "请输入上方配置文件列表左侧的序号 [1-${#json_files[@]}]，或输入 0 返回: " file_choice
         file_choice="${file_choice//$'\r'/}"
         file_choice="${file_choice//[[:space:]]/}"
@@ -3966,16 +3978,16 @@ update_instance_from_file() {
 
     if [[ "$has_placeholders" == true ]]; then
         log_warn "配置文件包含占位符值，需要先修改"
-        echo ""
-        echo -e "${YELLOW}检测到以下问题:${NC}"
-        echo "  - instanceId 可能是占位符"
-        echo "  - update-operation-constraint 可能是占位符"
-        echo ""
-        echo "请先编辑配置文件，修改以下内容:"
-        echo "  1. 将 instanceId 改为实际的实例 OCID"
-        echo "  2. 将 update-operation-constraint 改为 ALLOW_DOWNTIME 或 AVOID_DOWNTIME"
-        echo "  3. 将其他 'string' 值改为实际值或删除该字段"
-        echo ""
+        printf '%s\n' ""
+        printf '%b\n' "${YELLOW}检测到以下问题:${NC}"
+        printf '%s\n' "  - instanceId 可能是占位符"
+        printf '%s\n' "  - update-operation-constraint 可能是占位符"
+        printf '%s\n' ""
+        printf '%s\n' "请先编辑配置文件，修改以下内容:"
+        printf '%s\n' "  1. 将 instanceId 改为实际的实例 OCID"
+        printf '%s\n' "  2. 将 update-operation-constraint 改为 ALLOW_DOWNTIME 或 AVOID_DOWNTIME"
+        printf '%s\n' "  3. 将其他 'string' 值改为实际值或删除该字段"
+        printf '%s\n' ""
         read -p "是否立即编辑配置文件? [Y/n]: " -r
         [[ -z "$REPLY" ]] && REPLY="y"
 
@@ -4002,12 +4014,12 @@ update_instance_from_file() {
     fi
 
     # 显示配置文件内容
-    echo ""
-    echo -e "${BOLD}配置文件内容:${NC}"
-    echo "----------------------------------------"
+    printf '%s\n' ""
+    printf '%b\n' "${BOLD}配置文件内容:${NC}"
+    printf '%s\n' "----------------------------------------"
     jq '.' "$config_file" 2>/dev/null | head -30
-    echo "----------------------------------------"
-    echo ""
+    printf '%s\n' "----------------------------------------"
+    printf '%s\n' ""
 
     # 提取关键信息显示
     local instance_id ocpus memory
@@ -4019,18 +4031,18 @@ update_instance_from_file() {
     local mode_desc="直接更新"
     [[ "$mode" == "full" ]] && mode_desc="完整更新流程 (停止→更新→启动)"
 
-    echo -e "${BOLD}更新配置:${NC}"
-    echo "  模式: $mode_desc"
-    echo "  实例: ${instance_id:0:50}..."
-    echo "  目标 OCPU: $ocpus"
-    echo "  目标内存: ${memory} GB"
-    echo ""
+    printf '%b\n' "${BOLD}更新配置:${NC}"
+    printf '%s\n' "  模式: $mode_desc"
+    printf '%s\n' "  实例: ${instance_id:0:50}..."
+    printf '%s\n' "  目标 OCPU: $ocpus"
+    printf '%s\n' "  目标内存: ${memory} GB"
+    printf '%s\n' ""
 
     # 确认执行
-    echo -e "${YELLOW}警告: 更新操作将替换实例的配置${NC}"
+    printf '%b\n' "${YELLOW}警告: 更新操作将替换实例的配置${NC}"
     read -p "确认执行更新? [y/N]: " -r
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo "操作已取消"
+        printf '%s\n' "操作已取消"
         return 0
     fi
 
@@ -4081,12 +4093,12 @@ update_instance_from_file() {
             fi
         else
             log_error "配置更新失败"
-            echo ""
-            echo "错误输出:"
-            echo "$update_result"
+            printf '%s\n' ""
+            printf '%s\n' "错误输出:"
+            printf '%s\n' "$update_result"
 
             # 询问是否创建后台重试任务
-            echo ""
+            printf '%s\n' ""
             read -p "是否创建后台任务自动重试完整流程? [Y/n]: " -r
             [[ -z "$REPLY" ]] && REPLY="y"
 
@@ -4115,12 +4127,12 @@ update_instance_from_file() {
 
         if [[ $exit_code -eq 0 ]]; then
             log_success "更新命令执行成功"
-            echo ""
-            echo "更新结果:"
-            echo "$update_result" | jq '.' 2>/dev/null || echo "$update_result"
+            printf '%s\n' ""
+            printf '%s\n' "更新结果:"
+            printf '%s\n' "$update_result" | jq '.' 2>/dev/null || printf '%s\n' "$update_result"
 
             # 询问是否创建后台监控任务
-            echo ""
+            printf '%s\n' ""
             read -p "是否创建后台任务持续监控并重试? [y/N]: " -r
             if [[ $REPLY =~ ^[Yy]$ ]]; then
                 local request_interval
@@ -4136,12 +4148,12 @@ update_instance_from_file() {
             fi
         else
             log_error "更新命令执行失败"
-            echo ""
-            echo "错误输出:"
-            echo "$update_result"
+            printf '%s\n' ""
+            printf '%s\n' "错误输出:"
+            printf '%s\n' "$update_result"
 
             # 询问是否创建后台重试任务
-            echo ""
+            printf '%s\n' ""
             read -p "是否创建后台任务自动重试? [Y/n]: " -r
             [[ -z "$REPLY" ]] && REPLY="y"
 
@@ -4168,9 +4180,9 @@ update_instance_from_file() {
 # ================================
 update_instance_config_full() {
     show_header
-    echo -e "${BOLD}[8] 完整更新流程 (停止→更新→启动)${NC}"
-    echo "========================================"
-    echo ""
+    printf '%b\n' "${BOLD}[8] 完整更新流程 (停止→更新→启动)${NC}"
+    printf '%s\n' "========================================"
+    printf '%s\n' ""
 
     if ! check_oci_cli; then
         pause
@@ -4183,18 +4195,18 @@ update_instance_config_full() {
     fi
 
     # 交互式输入参数
-    echo -e "${YELLOW}请输入更新参数:${NC}"
-    echo ""
+    printf '%b\n' "${YELLOW}请输入更新参数:${NC}"
+    printf '%s\n' ""
 
     # 实例 ID（如果已经设置则跳过）
     if [[ -z "$INSTANCE_OCID" ]]; then
         read -p "实例 OCID: " INSTANCE_OCID
         while [[ -z "$INSTANCE_OCID" || ! "$INSTANCE_OCID" =~ ^ocid1\.instance\.oc1\. ]]; do
-            echo -e "${RED}无效的实例 OCID，格式应为: ocid1.instance.oc1...${NC}"
+            printf '%b\n' "${RED}无效的实例 OCID，格式应为: ocid1.instance.oc1...${NC}"
             read -p "实例 OCID: " INSTANCE_OCID
         done
     else
-        echo -e "${GREEN}✓${NC} 实例 OCID: ${INSTANCE_OCID:0:30}..."
+        printf '%b\n' "${GREEN}✓${NC} 实例 OCID: ${INSTANCE_OCID:0:30}..."
     fi
 
     # 目标 OCPU
@@ -4218,33 +4230,33 @@ update_instance_config_full() {
 
     if [[ -n "$current_info" ]]; then
         local name state current_ocpus current_memory shape
-        name=$(echo "$current_info" | jq -r '.data["display-name"] // "N/A"')
-        state=$(echo "$current_info" | jq -r '.data["lifecycle-state"] // "N/A"')
-        current_ocpus=$(echo "$current_info" | jq -r '.data["shape-config"].ocpus // "N/A"')
-        current_memory=$(echo "$current_info" | jq -r '.data["shape-config"]["memory-in-gbs"] // "N/A"')
-        shape=$(echo "$current_info" | jq -r '.data.shape // "N/A"')
+        name=$(printf '%s\n' "$current_info" | jq -r '.data["display-name"] // "N/A"')
+        state=$(printf '%s\n' "$current_info" | jq -r '.data["lifecycle-state"] // "N/A"')
+        current_ocpus=$(printf '%s\n' "$current_info" | jq -r '.data["shape-config"].ocpus // "N/A"')
+        current_memory=$(printf '%s\n' "$current_info" | jq -r '.data["shape-config"]["memory-in-gbs"] // "N/A"')
+        shape=$(printf '%s\n' "$current_info" | jq -r '.data.shape // "N/A"')
 
-        echo ""
-        echo "当前实例信息:"
-        echo "  名称: $name"
-        echo "  状态: $state"
-        echo "  形状: $shape"
-        echo "  当前 OCPU: $current_ocpus"
-        echo "  当前内存: ${current_memory} GB"
-        echo ""
-        echo "目标配置:"
-        echo "  目标 OCPU: $TARGET_OCPUS"
-        echo "  目标内存: ${TARGET_MEMORY} GB"
-        echo "  重试间隔: ${RETRY_INTERVAL} 秒"
+        printf '%s\n' ""
+        printf '%s\n' "当前实例信息:"
+        printf '%s\n' "  名称: $name"
+        printf '%s\n' "  状态: $state"
+        printf '%s\n' "  形状: $shape"
+        printf '%s\n' "  当前 OCPU: $current_ocpus"
+        printf '%s\n' "  当前内存: ${current_memory} GB"
+        printf '%s\n' ""
+        printf '%s\n' "目标配置:"
+        printf '%s\n' "  目标 OCPU: $TARGET_OCPUS"
+        printf '%s\n' "  目标内存: ${TARGET_MEMORY} GB"
+        printf '%s\n' "  重试间隔: ${RETRY_INTERVAL} 秒"
     fi
 
-    echo ""
+    printf '%s\n' ""
     read -p "确认执行完整更新流程? [Y/n]: " -r
     [[ -z "$REPLY" ]] && REPLY="y"
-    echo
-
+    printf '
+'
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo "操作已取消"
+        printf '%s\n' "操作已取消"
         pause
         return 0
     fi
@@ -4262,7 +4274,7 @@ get_tenancy_id_from_config() {
 
 expand_path() {
     local path="$1"
-    echo "${path/#\~/$HOME}"
+    printf '%s\n' "${path/#\~/$HOME}"
 }
 
 SELECT_RESULT=""
@@ -4279,15 +4291,15 @@ select_option_pairs() {
         return 1
     fi
 
-    echo ""
-    echo -e "${CYAN}${title}${NC}"
+    printf '%s\n' ""
+    printf '%b\n' "${CYAN}${title}${NC}"
     local i
     for ((i=0; i<${#options[@]}; i++)); do
         local label="${options[$i]%%|*}"
-        echo "  $((i+1))) $label"
+        printf '%s\n' "  $((i+1))) $label"
     done
-    echo "  0) 手动输入"
-    echo ""
+    printf '%s\n' "  0) 手动输入"
+    printf '%s\n' ""
 
     local choice
     local default_index=1
@@ -4361,7 +4373,7 @@ read_task_list_choice() {
 
 pause_no_background_tasks() {
     log_warn "当前没有后台任务，无法执行该操作"
-    echo "提示: 创建实例或更新实例时选择后台重试后，任务会显示在这里。"
+    printf '%s\n' "提示: 创建实例或更新实例时选择后台重试后，任务会显示在这里。"
     read -r -p "按回车键返回任务菜单..."
 }
 
@@ -4471,16 +4483,16 @@ LAST_CREATED_VCN_PUBLIC_READY="false"
 
 generate_default_network_name() {
     local prefix="$1"
-    echo "${prefix}-$(date +%m%d%H%M)"
+    printf '%s\n' "${prefix}-$(date +%m%d%H%M)"
 }
 
 generate_default_dns_label() {
     local prefix="$1"
     local cleaned
-    cleaned=$(echo "$prefix" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9')
+    cleaned=$(printf '%s\n' "$prefix" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9')
     [[ -z "$cleaned" ]] && cleaned="net"
     cleaned="${cleaned:0:6}"
-    echo "${cleaned}$(date +%m%d%H)"
+    printf '%s\n' "${cleaned}$(date +%m%d%H)"
 }
 
 get_vcn_cidr() {
@@ -4503,9 +4515,9 @@ derive_default_subnet_cidr() {
     local vcn_cidr="$1"
 
     if [[ "$vcn_cidr" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.[0-9]{1,3}\.[0-9]{1,3}/ ]]; then
-        echo "${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.1.0/24"
+        printf '%s\n' "${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.1.0/24"
     else
-        echo "10.0.0.0/24"
+        printf '%s\n' "10.0.0.0/24"
     fi
 }
 
@@ -4536,7 +4548,7 @@ ensure_public_route_for_vcn() {
             log_error "Internet Gateway 创建失败: $igw_id"
             return 1
         fi
-        igw_id="$(echo "$igw_id" | tail -n 1 | tr -d '\r')"
+        igw_id="$(printf '%s\n' "$igw_id" | tail -n 1 | tr -d '\r')"
     else
         log_info "复用现有 Internet Gateway: $igw_id"
     fi
@@ -4553,14 +4565,14 @@ ensure_public_route_for_vcn() {
         --output json 2>/dev/null)
     [[ -z "$current_rules" || "$current_rules" == "null" ]] && current_rules="[]"
 
-    if echo "$current_rules" | jq -e --arg igw_id "$igw_id" '.[] | select(.cidrBlock == "0.0.0.0/0" and .networkEntityId == $igw_id)' >/dev/null 2>&1; then
+    if printf '%s\n' "$current_rules" | jq -e --arg igw_id "$igw_id" '.[] | select(.cidrBlock == "0.0.0.0/0" and .networkEntityId == $igw_id)' >/dev/null 2>&1; then
         log_info "默认路由表已存在公网路由"
         LAST_CREATED_VCN_DEFAULT_ROUTE_TABLE_ID="$route_table_id"
         LAST_CREATED_VCN_PUBLIC_READY="true"
         return 0
     fi
 
-    route_rules_json=$(echo "$current_rules" | jq -c --arg igw_id "$igw_id" '. + [{"cidrBlock":"0.0.0.0/0","networkEntityId":$igw_id}]')
+    route_rules_json=$(printf '%s\n' "$current_rules" | jq -c --arg igw_id "$igw_id" '. + [{"cidrBlock":"0.0.0.0/0","networkEntityId":$igw_id}]')
 
     log_info "正在为默认路由表添加公网路由..."
     local update_result
@@ -4584,11 +4596,11 @@ ensure_public_route_for_vcn() {
 create_vcn_interactive() {
     local compartment_id="$1"
 
-    echo ""
-    echo -e "${BOLD}----------------------------------------${NC}"
-    echo -e "${BOLD}新建 VCN${NC}"
-    echo -e "${BOLD}----------------------------------------${NC}"
-    echo ""
+    printf '%s\n' ""
+    printf '%b\n' "${BOLD}----------------------------------------${NC}"
+    printf '%b\n' "${BOLD}新建 VCN${NC}"
+    printf '%b\n' "${BOLD}----------------------------------------${NC}"
+    printf '%s\n' ""
 
     local vcn_name vcn_cidr dns_label create_result vcn_id
     local setup_mode input_value auto_public_network default_vcn_name default_vcn_cidr default_dns_label igw_name
@@ -4597,10 +4609,10 @@ create_vcn_interactive() {
     default_vcn_cidr="10.0.0.0/16"
     default_dns_label="$(generate_default_dns_label "vcn")"
 
-    echo "创建模式:"
-    echo "  1) 快速创建公网 VCN（推荐，自动创建 Internet Gateway 和默认公网路由）"
-    echo "  2) 仅创建基础 VCN"
-    echo "  3) 自定义"
+    printf '%s\n' "创建模式:"
+    printf '%s\n' "  1) 快速创建公网 VCN（推荐，自动创建 Internet Gateway 和默认公网路由）"
+    printf '%s\n' "  2) 仅创建基础 VCN"
+    printf '%s\n' "  3) 自定义"
     read_choice_with_default_label setup_mode "请选择" "1" "快速创建公网 VCN"
     auto_public_network="true"
     [[ "$setup_mode" == "2" ]] && auto_public_network="false"
@@ -4614,33 +4626,33 @@ create_vcn_interactive() {
     read -p "VCN 名称 [默认: ${default_vcn_name}]: " vcn_name
     vcn_name="${vcn_name:-$default_vcn_name}"
     while [[ -z "$vcn_name" ]]; do
-        echo -e "${RED}VCN 名称不能为空${NC}"
+        printf '%b\n' "${RED}VCN 名称不能为空${NC}"
         read -p "VCN 名称: " vcn_name
     done
 
     read -p "VCN CIDR [默认: ${default_vcn_cidr}]: " vcn_cidr
     vcn_cidr="${vcn_cidr:-$default_vcn_cidr}"
     while ! is_valid_cidr_block "$vcn_cidr"; do
-        echo -e "${RED}VCN CIDR 格式无效${NC}"
+        printf '%b\n' "${RED}VCN CIDR 格式无效${NC}"
         read -p "VCN CIDR: " vcn_cidr
     done
 
     read -p "VCN DNS Label [默认: ${default_dns_label}]: " dns_label
     dns_label="${dns_label:-$default_dns_label}"
     while ! is_valid_dns_label "$dns_label"; do
-        echo -e "${RED}VCN DNS Label 无效，请使用 1-15 位小写字母数字，且必须以字母开头${NC}"
+        printf '%b\n' "${RED}VCN DNS Label 无效，请使用 1-15 位小写字母数字，且必须以字母开头${NC}"
         read -p "VCN DNS Label: " dns_label
     done
 
     igw_name="${vcn_name}-igw"
 
-    echo ""
-    echo -e "${CYAN}VCN 创建摘要:${NC}"
-    echo "  VCN 名称:     $vcn_name"
-    echo "  VCN CIDR:     $vcn_cidr"
-    echo "  DNS Label:    $dns_label"
-    echo "  公网访问:     $([[ "$auto_public_network" == "true" ]] && echo "自动配置" || echo "不自动配置")"
-    echo ""
+    printf '%s\n' ""
+    printf '%b\n' "${CYAN}VCN 创建摘要:${NC}"
+    printf '%s\n' "  VCN 名称:     $vcn_name"
+    printf '%s\n' "  VCN CIDR:     $vcn_cidr"
+    printf '%s\n' "  DNS Label:    $dns_label"
+    printf '%s\n' "  公网访问:     $([[ "$auto_public_network" == "true" ]] && printf '%s\n' "自动配置" || printf '%s\n' "不自动配置")"
+    printf '%s\n' ""
 
     read -p "确认创建 VCN? [Y/n]: " -r
     [[ -z "$REPLY" ]] && REPLY="y"
@@ -4664,10 +4676,10 @@ create_vcn_interactive() {
         return 1
     fi
 
-    vcn_id="$(echo "$create_result" | tail -n 1 | tr -d '\r')"
+    vcn_id="$(printf '%s\n' "$create_result" | tail -n 1 | tr -d '\r')"
     if [[ -z "$vcn_id" || "$vcn_id" == "null" || ! "$vcn_id" =~ ^ocid1\.vcn\.oc1\. ]]; then
         log_error "未能从创建结果中解析 VCN OCID"
-        echo "$create_result"
+        printf '%s\n' "$create_result"
         return 1
     fi
 
@@ -4773,26 +4785,26 @@ create_subnet_interactive() {
     local compartment_id="$1"
     local availability_domain="$2"
 
-    echo ""
-    echo -e "${BOLD}----------------------------------------${NC}"
-    echo -e "${BOLD}新建子网${NC}"
-    echo -e "${BOLD}----------------------------------------${NC}"
-    echo ""
+    printf '%s\n' ""
+    printf '%b\n' "${BOLD}----------------------------------------${NC}"
+    printf '%b\n' "${BOLD}新建子网${NC}"
+    printf '%b\n' "${BOLD}----------------------------------------${NC}"
+    printf '%s\n' ""
 
     local vcn_id subnet_name subnet_cidr dns_label subnet_scope subnet_type prohibit_public_ip use_ad
     local route_table_id security_list_ids_json input_value create_result subnet_id vcn_cidr
     local default_subnet_name default_public_name default_private_name default_subnet_cidr default_dns_label
 
-    echo "VCN 获取方式:"
-    echo "  1) 查询并选择"
-    echo "  2) 手动输入"
-    echo "  3) 新建 VCN"
+    printf '%s\n' "VCN 获取方式:"
+    printf '%s\n' "  1) 查询并选择"
+    printf '%s\n' "  2) 手动输入"
+    printf '%s\n' "  3) 新建 VCN"
     read_choice_with_default_label input_value "请选择" "1" "查询并选择"
 
     if [[ "$input_value" == "1" ]] && query_vcns "$compartment_id"; then
         vcn_id="$SELECT_RESULT"
     elif [[ "$input_value" == "1" ]]; then
-        echo ""
+        printf '%s\n' ""
         log_warn "未查询到可用 VCN，或未选择 VCN"
         read -p "是否现在新建一个 VCN? [Y/n]: " -r
         [[ -z "$REPLY" ]] && REPLY="y"
@@ -4809,7 +4821,7 @@ create_subnet_interactive() {
         read -p "VCN OCID: " vcn_id
     fi
     while [[ -z "$vcn_id" || ! "$vcn_id" =~ ^ocid1\.vcn\.oc1\. ]]; do
-        echo -e "${RED}无效的 VCN OCID${NC}"
+        printf '%b\n' "${RED}无效的 VCN OCID${NC}"
         read -p "VCN OCID: " vcn_id
     done
 
@@ -4820,10 +4832,10 @@ create_subnet_interactive() {
     default_subnet_cidr="$(derive_default_subnet_cidr "$vcn_cidr")"
     default_dns_label="$(generate_default_dns_label "subnet")"
 
-    echo ""
-    echo "子网类型:"
-    echo "  1) 公有子网（允许分配公网IP）"
-    echo "  2) 私有子网（禁止分配公网IP）"
+    printf '%s\n' ""
+    printf '%s\n' "子网类型:"
+    printf '%s\n' "  1) 公有子网（允许分配公网IP）"
+    printf '%s\n' "  2) 私有子网（禁止分配公网IP）"
     read_choice_with_default_label subnet_type "请选择" "1" "公有子网"
     prohibit_public_ip="false"
     if [[ "$subnet_type" == "2" ]]; then
@@ -4834,33 +4846,33 @@ create_subnet_interactive() {
     read -p "子网名称 [默认: ${default_subnet_name}]: " subnet_name
     subnet_name="${subnet_name:-$default_subnet_name}"
     while [[ -z "$subnet_name" ]]; do
-        echo -e "${RED}子网名称不能为空${NC}"
+        printf '%b\n' "${RED}子网名称不能为空${NC}"
         read -p "子网名称: " subnet_name
     done
 
     read -p "子网 CIDR [默认: ${default_subnet_cidr}]: " subnet_cidr
     subnet_cidr="${subnet_cidr:-$default_subnet_cidr}"
     while ! is_valid_cidr_block "$subnet_cidr"; do
-        echo -e "${RED}子网 CIDR 格式无效${NC}"
+        printf '%b\n' "${RED}子网 CIDR 格式无效${NC}"
         read -p "子网 CIDR: " subnet_cidr
     done
 
     read -p "DNS Label [默认: ${default_dns_label}]（可选）: " dns_label
     dns_label="${dns_label:-$default_dns_label}"
     while [[ -n "$dns_label" ]] && ! is_valid_dns_label "$dns_label"; do
-        echo -e "${RED}DNS Label 无效，请使用 1-15 位小写字母数字，且必须以字母开头${NC}"
+        printf '%b\n' "${RED}DNS Label 无效，请使用 1-15 位小写字母数字，且必须以字母开头${NC}"
         read -p "DNS Label（可选）: " dns_label
     done
 
-    echo ""
-    echo "子网范围:"
-    echo "  1) 区域子网（推荐）"
-    echo "  2) 可用性域子网 (${availability_domain})"
+    printf '%s\n' ""
+    printf '%s\n' "子网范围:"
+    printf '%s\n' "  1) 区域子网（推荐）"
+    printf '%s\n' "  2) 可用性域子网 (${availability_domain})"
     read_choice_with_default_label subnet_scope "请选择" "1" "区域子网"
     use_ad="false"
     [[ "$subnet_scope" == "2" ]] && use_ad="true"
 
-    echo ""
+    printf '%s\n' ""
     if [[ "$prohibit_public_ip" == "false" && "$vcn_id" == "$LAST_CREATED_VCN_ID" && "$LAST_CREATED_VCN_PUBLIC_READY" == "true" && -n "$LAST_CREATED_VCN_DEFAULT_ROUTE_TABLE_ID" ]]; then
         route_table_id="$LAST_CREATED_VCN_DEFAULT_ROUTE_TABLE_ID"
         log_info "检测到刚创建的公网 VCN，默认使用其路由表: ${route_table_id}"
@@ -4874,25 +4886,25 @@ create_subnet_interactive() {
 
     read -p "安全列表 OCID JSON 数组（可选，如 [\"ocid1.securitylist...\"]）: " security_list_ids_json
     if [[ -n "$security_list_ids_json" ]]; then
-        while ! echo "$security_list_ids_json" | jq -e 'type == "array"' >/dev/null 2>&1; do
-            echo -e "${RED}安全列表必须是 JSON 数组格式${NC}"
+        while ! printf '%s\n' "$security_list_ids_json" | jq -e 'type == "array"' >/dev/null 2>&1; do
+            printf '%b\n' "${RED}安全列表必须是 JSON 数组格式${NC}"
             read -p "安全列表 OCID JSON 数组（可选）: " security_list_ids_json
             [[ -z "$security_list_ids_json" ]] && break
         done
     fi
 
-    echo ""
-    echo -e "${CYAN}子网创建摘要:${NC}"
-    echo "  VCN:          ${vcn_id:0:50}..."
-    [[ -n "$vcn_cidr" ]] && echo "  VCN CIDR:     $vcn_cidr"
-    echo "  子网名称:     $subnet_name"
-    echo "  CIDR:         $subnet_cidr"
-    echo "  DNS Label:    ${dns_label:-未设置}"
-    echo "  范围:         $([[ "$use_ad" == "true" ]] && echo "可用性域子网" || echo "区域子网")"
-    echo "  类型:         $([[ "$prohibit_public_ip" == "true" ]] && echo "私有子网" || echo "公有子网")"
-    [[ -n "$route_table_id" ]] && echo "  路由表:       ${route_table_id:0:50}..."
-    [[ -n "$security_list_ids_json" ]] && echo "  安全列表:     已指定"
-    echo ""
+    printf '%s\n' ""
+    printf '%b\n' "${CYAN}子网创建摘要:${NC}"
+    printf '%s\n' "  VCN:          ${vcn_id:0:50}..."
+    [[ -n "$vcn_cidr" ]] && printf '%s\n' "  VCN CIDR:     $vcn_cidr"
+    printf '%s\n' "  子网名称:     $subnet_name"
+    printf '%s\n' "  CIDR:         $subnet_cidr"
+    printf '%s\n' "  DNS Label:    ${dns_label:-未设置}"
+    printf '%s\n' "  范围:         $([[ "$use_ad" == "true" ]] && printf '%s\n' "可用性域子网" || printf '%s\n' "区域子网")"
+    printf '%s\n' "  类型:         $([[ "$prohibit_public_ip" == "true" ]] && printf '%s\n' "私有子网" || printf '%s\n' "公有子网")"
+    [[ -n "$route_table_id" ]] && printf '%s\n' "  路由表:       ${route_table_id:0:50}..."
+    [[ -n "$security_list_ids_json" ]] && printf '%s\n' "  安全列表:     已指定"
+    printf '%s\n' ""
 
     read -p "确认创建子网? [Y/n]: " -r
     [[ -z "$REPLY" ]] && REPLY="y"
@@ -4933,10 +4945,10 @@ create_subnet_interactive() {
         return 1
     fi
 
-    subnet_id="$(echo "$create_result" | tail -n 1 | tr -d '\r')"
+    subnet_id="$(printf '%s\n' "$create_result" | tail -n 1 | tr -d '\r')"
     if [[ -z "$subnet_id" || "$subnet_id" == "null" || ! "$subnet_id" =~ ^ocid1\.subnet\.oc1\. ]]; then
         log_error "未能从创建结果中解析子网 OCID"
-        echo "$create_result"
+        printf '%s\n' "$create_result"
         return 1
     fi
 
@@ -5116,29 +5128,29 @@ show_create_instance_config_summary() {
     memory_gbs=$(jq -r '.memoryInGBs // "N/A"' "$config_file")
     retry_interval=$(jq -r '.retryInterval // 10' "$config_file")
 
-    echo ""
-    echo -e "${BOLD}创建实例配置摘要${NC}"
-    echo "----------------------------------------"
-    echo "配置文件:      $config_file"
-    echo "区间 OCID:     ${compartment_id:0:50}..."
-    echo "可用性域:      $availability_domain"
-    echo "子网 OCID:     ${subnet_id:0:50}..."
-    echo "镜像系统:      $image_os"
-    [[ -n "$image_os_version" && "$image_os_version" != "N/A" ]] && echo "系统版本:      $image_os_version"
-    echo "镜像 OCID:     ${image_id:0:50}..."
-    echo "实例规格:      $shape"
+    printf '%s\n' ""
+    printf '%b\n' "${BOLD}创建实例配置摘要${NC}"
+    printf '%s\n' "----------------------------------------"
+    printf '%s\n' "配置文件:      $config_file"
+    printf '%s\n' "区间 OCID:     ${compartment_id:0:50}..."
+    printf '%s\n' "可用性域:      $availability_domain"
+    printf '%s\n' "子网 OCID:     ${subnet_id:0:50}..."
+    printf '%s\n' "镜像系统:      $image_os"
+    [[ -n "$image_os_version" && "$image_os_version" != "N/A" ]] && printf '%s\n' "系统版本:      $image_os_version"
+    printf '%s\n' "镜像 OCID:     ${image_id:0:50}..."
+    printf '%s\n' "实例规格:      $shape"
     if [[ "$shape" == *"Flex"* ]]; then
-        echo "OCPU:          $ocpus"
-        echo "内存(GB):      $memory_gbs"
+        printf '%s\n' "OCPU:          $ocpus"
+        printf '%s\n' "内存(GB):      $memory_gbs"
     fi
-    echo "实例名称:      $display_name"
-    echo "SSH 公钥:      $ssh_public_key"
-    echo "公网 IP:       $assign_public_ip"
-    echo "启动盘(GB):    $boot_volume_size"
-    echo "启动盘性能:    ${boot_volume_vpus_per_gb} VPU/GB"
-    echo "重试间隔(秒):  $retry_interval"
-    echo "----------------------------------------"
-    echo ""
+    printf '%s\n' "实例名称:      $display_name"
+    printf '%s\n' "SSH 公钥:      $ssh_public_key"
+    printf '%s\n' "公网 IP:       $assign_public_ip"
+    printf '%s\n' "启动盘(GB):    $boot_volume_size"
+    printf '%s\n' "启动盘性能:    ${boot_volume_vpus_per_gb} VPU/GB"
+    printf '%s\n' "重试间隔(秒):  $retry_interval"
+    printf '%s\n' "----------------------------------------"
+    printf '%s\n' ""
 }
 
 save_create_instance_config() {
@@ -5255,9 +5267,9 @@ autosave_create_instance_progress() {
 
 get_create_instance_resume_file() {
     if [[ -f "$CREATE_INSTANCE_DRAFT_CONFIG" ]] && jq empty "$CREATE_INSTANCE_DRAFT_CONFIG" >/dev/null 2>&1; then
-        echo "$CREATE_INSTANCE_DRAFT_CONFIG"
+        printf '%s\n' "$CREATE_INSTANCE_DRAFT_CONFIG"
     else
-        echo "$CREATE_INSTANCE_CONFIG"
+        printf '%s\n' "$CREATE_INSTANCE_CONFIG"
     fi
 }
 
@@ -5267,9 +5279,9 @@ configure_create_instance_params() {
     local resume_file
 
     show_header
-    echo -e "${BOLD}[5] 创建实例 - 获取关键参数并保存${NC}"
-    echo "========================================"
-    echo ""
+    printf '%b\n' "${BOLD}[5] 创建实例 - 获取关键参数并保存${NC}"
+    printf '%s\n' "========================================"
+    printf '%s\n' ""
 
     if ! check_oci_cli; then
         pause
@@ -5281,22 +5293,22 @@ configure_create_instance_params() {
         return 1
     fi
 
-    trap 'echo -e "\n${YELLOW}已中断，当前创建实例参数进度已自动保存到: ${draft_file}${NC}"; trap '\''echo -e "\n${YELLOW}操作已取消${NC}"; exit 0'\'' INT TERM; return 130 2>/dev/null || exit 130' INT TERM
+    trap 'printf "%b\n" "\n${YELLOW}已中断，当前创建实例参数进度已自动保存到: ${draft_file}${NC}"; trap '\''printf "%b\n" "\n${YELLOW}操作已取消${NC}"; exit 0'\'' INT TERM; return 130 2>/dev/null || exit 130' INT TERM
 
     resume_file="$(get_create_instance_resume_file)"
     load_create_instance_defaults "$resume_file"
 
-    echo "正式配置路径: $config_file"
-    echo "草稿路径:     $draft_file"
+    printf '%s\n' "正式配置路径: $config_file"
+    printf '%s\n' "草稿路径:     $draft_file"
     if [[ -f "$draft_file" ]]; then
-        echo -e "${GREEN}✓${NC} 检测到未完成草稿，将从草稿继续"
+        printf '%b\n' "${GREEN}✓${NC} 检测到未完成草稿，将从草稿继续"
     elif [[ -f "$config_file" ]]; then
-        echo -e "${GREEN}✓${NC} 检测到已确认配置，将作为默认值"
+        printf '%b\n' "${GREEN}✓${NC} 检测到已确认配置，将作为默认值"
     else
-        echo -e "${YELLOW}!${NC} 尚未保存创建配置，将生成新的配置文件"
+        printf '%b\n' "${YELLOW}!${NC} 尚未保存创建配置，将生成新的配置文件"
     fi
-    echo -e "${CYAN}提示: 本流程会自动保存到草稿文件，只有确认完成时才会更新正式配置${NC}"
-    echo ""
+    printf '%b\n' "${CYAN}提示: 本流程会自动保存到草稿文件，只有确认完成时才会更新正式配置${NC}"
+    printf '%s\n' ""
 
     local compartment_id availability_domain subnet_id image_id image_os image_os_version ssh_public_key
     local shape ocpus memory_gbs boot_volume_size boot_volume_vpus_per_gb display_name assign_public_ip retry_interval vcn_id
@@ -5305,15 +5317,15 @@ configure_create_instance_params() {
     read -p "区间 OCID [默认: ${CREATE_COMPARTMENT_ID}]: " input_value
     compartment_id="${input_value:-$CREATE_COMPARTMENT_ID}"
     while [[ -z "$compartment_id" || ! "$compartment_id" =~ ^ocid1\. ]]; do
-        echo -e "${RED}无效的区间 OCID${NC}"
+        printf '%b\n' "${RED}无效的区间 OCID${NC}"
         read -p "区间 OCID: " compartment_id
     done
     autosave_create_instance_progress "$draft_file" "$compartment_id" "$CREATE_AVAILABILITY_DOMAIN" "$CREATE_SUBNET_ID" "$CREATE_IMAGE_ID" "$CREATE_IMAGE_OS" "$CREATE_IMAGE_OS_VERSION" "$CREATE_SSH_PUBLIC_KEY" "$CREATE_SHAPE" "$CREATE_OCPUS" "$CREATE_MEMORY_GB" "$CREATE_BOOT_VOLUME_SIZE" "$CREATE_BOOT_VOLUME_VPUS_PER_GB" "$CREATE_DISPLAY_NAME" "$CREATE_ASSIGN_PUBLIC_IP" "$CREATE_RETRY_INTERVAL"
 
-    echo ""
-    echo "可用性域获取方式:"
-    echo "  1) 查询并选择"
-    echo "  2) 手动输入"
+    printf '%s\n' ""
+    printf '%s\n' "可用性域获取方式:"
+    printf '%s\n' "  1) 查询并选择"
+    printf '%s\n' "  2) 手动输入"
     read_choice_with_default_label lookup_mode "请选择" "1" "查询并选择"
     if [[ "$lookup_mode" == "1" ]] && query_availability_domains "$CREATE_AVAILABILITY_DOMAIN"; then
         availability_domain="$SELECT_RESULT"
@@ -5322,15 +5334,15 @@ configure_create_instance_params() {
         availability_domain="${input_value:-$CREATE_AVAILABILITY_DOMAIN}"
     fi
     while [[ -z "$availability_domain" ]]; do
-        echo -e "${RED}可用性域不能为空${NC}"
+        printf '%b\n' "${RED}可用性域不能为空${NC}"
         read -p "可用性域: " availability_domain
     done
     autosave_create_instance_progress "$draft_file" "$compartment_id" "$availability_domain" "$CREATE_SUBNET_ID" "$CREATE_IMAGE_ID" "$CREATE_IMAGE_OS" "$CREATE_IMAGE_OS_VERSION" "$CREATE_SSH_PUBLIC_KEY" "$CREATE_SHAPE" "$CREATE_OCPUS" "$CREATE_MEMORY_GB" "$CREATE_BOOT_VOLUME_SIZE" "$CREATE_BOOT_VOLUME_VPUS_PER_GB" "$CREATE_DISPLAY_NAME" "$CREATE_ASSIGN_PUBLIC_IP" "$CREATE_RETRY_INTERVAL"
 
-    echo ""
-    echo "实例规格获取方式:"
-    echo "  1) 查询并选择"
-    echo "  2) 手动输入"
+    printf '%s\n' ""
+    printf '%s\n' "实例规格获取方式:"
+    printf '%s\n' "  1) 查询并选择"
+    printf '%s\n' "  2) 手动输入"
     read_choice_with_default_label lookup_mode "请选择" "1" "查询并选择"
     if [[ "$lookup_mode" == "1" ]] && query_shapes "$compartment_id" "$availability_domain" "$CREATE_SHAPE"; then
         shape="$SELECT_RESULT"
@@ -5339,7 +5351,7 @@ configure_create_instance_params() {
         shape="${input_value:-$CREATE_SHAPE}"
     fi
     while [[ -z "$shape" ]]; do
-        echo -e "${RED}实例规格不能为空${NC}"
+        printf '%b\n' "${RED}实例规格不能为空${NC}"
         read -p "实例规格: " shape
     done
 
@@ -5349,31 +5361,31 @@ configure_create_instance_params() {
         read -p "OCPU 数量 [默认: ${CREATE_OCPUS}]: " input_value
         ocpus="${input_value:-$CREATE_OCPUS}"
         while [[ ! "$ocpus" =~ ^[0-9]+([.][0-9]+)?$ ]]; do
-            echo -e "${RED}请输入有效的 OCPU 数值${NC}"
+            printf '%b\n' "${RED}请输入有效的 OCPU 数值${NC}"
             read -p "OCPU 数量: " ocpus
         done
 
         read -p "内存 (GB) [默认: ${CREATE_MEMORY_GB}]: " input_value
         memory_gbs="${input_value:-$CREATE_MEMORY_GB}"
         while [[ ! "$memory_gbs" =~ ^[0-9]+([.][0-9]+)?$ ]]; do
-            echo -e "${RED}请输入有效的内存数值${NC}"
+            printf '%b\n' "${RED}请输入有效的内存数值${NC}"
             read -p "内存 (GB): " memory_gbs
         done
     fi
     autosave_create_instance_progress "$draft_file" "$compartment_id" "$availability_domain" "$CREATE_SUBNET_ID" "$CREATE_IMAGE_ID" "$CREATE_IMAGE_OS" "$CREATE_IMAGE_OS_VERSION" "$CREATE_SSH_PUBLIC_KEY" "$shape" "$ocpus" "$memory_gbs" "$CREATE_BOOT_VOLUME_SIZE" "$CREATE_BOOT_VOLUME_VPUS_PER_GB" "$CREATE_DISPLAY_NAME" "$CREATE_ASSIGN_PUBLIC_IP" "$CREATE_RETRY_INTERVAL"
 
-    echo ""
-    echo "子网获取方式:"
-    echo "  1) 查询并选择"
-    echo "  2) 手动输入"
-    echo "  3) 新建子网"
+    printf '%s\n' ""
+    printf '%s\n' "子网获取方式:"
+    printf '%s\n' "  1) 查询并选择"
+    printf '%s\n' "  2) 手动输入"
+    printf '%s\n' "  3) 新建子网"
     read_choice_with_default_label lookup_mode "请选择" "1" "查询并选择"
     if [[ "$lookup_mode" == "1" ]]; then
         read -p "VCN OCID（可选，留空则列出区间内全部子网）: " vcn_id
         if query_subnets "$compartment_id" "$vcn_id" "$CREATE_SUBNET_ID"; then
             subnet_id="$SELECT_RESULT"
         else
-            echo ""
+            printf '%s\n' ""
             log_warn "未查询到可用子网，或未选择子网"
             read -p "是否现在新建一个子网? [Y/n]: " -r
             [[ -z "$REPLY" ]] && REPLY="y"
@@ -5393,15 +5405,15 @@ configure_create_instance_params() {
         subnet_id="${input_value:-$CREATE_SUBNET_ID}"
     fi
     while [[ -z "$subnet_id" || ! "$subnet_id" =~ ^ocid1\.subnet\.oc1\. ]]; do
-        echo -e "${RED}无效的子网 OCID${NC}"
+        printf '%b\n' "${RED}无效的子网 OCID${NC}"
         read -p "子网 OCID: " subnet_id
     done
     autosave_create_instance_progress "$draft_file" "$compartment_id" "$availability_domain" "$subnet_id" "$CREATE_IMAGE_ID" "$CREATE_IMAGE_OS" "$CREATE_IMAGE_OS_VERSION" "$CREATE_SSH_PUBLIC_KEY" "$shape" "$ocpus" "$memory_gbs" "$CREATE_BOOT_VOLUME_SIZE" "$CREATE_BOOT_VOLUME_VPUS_PER_GB" "$CREATE_DISPLAY_NAME" "$CREATE_ASSIGN_PUBLIC_IP" "$CREATE_RETRY_INTERVAL"
 
-    echo ""
-    echo "镜像获取方式:"
-    echo "  1) 查询并选择"
-    echo "  2) 手动输入"
+    printf '%s\n' ""
+    printf '%s\n' "镜像获取方式:"
+    printf '%s\n' "  1) 查询并选择"
+    printf '%s\n' "  2) 手动输入"
     read_choice_with_default_label lookup_mode "请选择" "1" "查询并选择"
     image_os="$CREATE_IMAGE_OS"
     image_os_version="$CREATE_IMAGE_OS_VERSION"
@@ -5412,14 +5424,14 @@ configure_create_instance_params() {
             read -p "操作系统名称 [默认: ${CREATE_IMAGE_OS}]: " input_value
             image_os="${input_value:-$CREATE_IMAGE_OS}"
         fi
-        echo "已选择操作系统: $image_os"
+        printf '%s\n' "已选择操作系统: $image_os"
         if query_image_operating_system_versions "$compartment_id" "$image_os" "$CREATE_IMAGE_OS_VERSION"; then
             image_os_version="$SELECT_RESULT"
         else
             read -p "操作系统版本 [默认: ${CREATE_IMAGE_OS_VERSION:-自动选择}]: " input_value
             image_os_version="${input_value:-$CREATE_IMAGE_OS_VERSION}"
         fi
-        [[ -n "$image_os_version" ]] && echo "已选择系统版本: $image_os_version"
+        [[ -n "$image_os_version" ]] && printf '%s\n' "已选择系统版本: $image_os_version"
         if query_images "$compartment_id" "$image_os" "$image_os_version" "$shape" "$CREATE_IMAGE_ID"; then
             image_id="$SELECT_RESULT"
         fi
@@ -5429,7 +5441,7 @@ configure_create_instance_params() {
         image_id="${input_value:-$CREATE_IMAGE_ID}"
     fi
     while [[ -z "$image_id" || ! "$image_id" =~ ^ocid1\.image\.oc1\. ]]; do
-        echo -e "${RED}无效的镜像 OCID${NC}"
+        printf '%b\n' "${RED}无效的镜像 OCID${NC}"
         read -p "镜像 OCID: " image_id
     done
     autosave_create_instance_progress "$draft_file" "$compartment_id" "$availability_domain" "$subnet_id" "$image_id" "$image_os" "$image_os_version" "$CREATE_SSH_PUBLIC_KEY" "$shape" "$ocpus" "$memory_gbs" "$CREATE_BOOT_VOLUME_SIZE" "$CREATE_BOOT_VOLUME_VPUS_PER_GB" "$CREATE_DISPLAY_NAME" "$CREATE_ASSIGN_PUBLIC_IP" "$CREATE_RETRY_INTERVAL"
@@ -5446,7 +5458,7 @@ configure_create_instance_params() {
     read -p "实例名称 [默认: ${CREATE_DISPLAY_NAME}]: " input_value
     display_name="${input_value:-$CREATE_DISPLAY_NAME}"
     while [[ -z "$display_name" ]]; do
-        echo -e "${RED}实例名称不能为空${NC}"
+        printf '%b\n' "${RED}实例名称不能为空${NC}"
         read -p "实例名称: " display_name
     done
     autosave_create_instance_progress "$draft_file" "$compartment_id" "$availability_domain" "$subnet_id" "$image_id" "$image_os" "$image_os_version" "$ssh_public_key" "$shape" "$ocpus" "$memory_gbs" "$CREATE_BOOT_VOLUME_SIZE" "$CREATE_BOOT_VOLUME_VPUS_PER_GB" "$display_name" "$CREATE_ASSIGN_PUBLIC_IP" "$CREATE_RETRY_INTERVAL"
@@ -5454,7 +5466,7 @@ configure_create_instance_params() {
     read -p "分配公网 IP? [true/false，默认: ${CREATE_ASSIGN_PUBLIC_IP}]: " input_value
     assign_public_ip="${input_value:-$CREATE_ASSIGN_PUBLIC_IP}"
     while [[ "$assign_public_ip" != "true" && "$assign_public_ip" != "false" ]]; do
-        echo -e "${RED}请输入 true 或 false${NC}"
+        printf '%b\n' "${RED}请输入 true 或 false${NC}"
         read -p "分配公网 IP? [true/false]: " assign_public_ip
     done
     autosave_create_instance_progress "$draft_file" "$compartment_id" "$availability_domain" "$subnet_id" "$image_id" "$image_os" "$image_os_version" "$ssh_public_key" "$shape" "$ocpus" "$memory_gbs" "$CREATE_BOOT_VOLUME_SIZE" "$CREATE_BOOT_VOLUME_VPUS_PER_GB" "$display_name" "$assign_public_ip" "$CREATE_RETRY_INTERVAL"
@@ -5463,7 +5475,7 @@ configure_create_instance_params() {
     boot_volume_size="${input_value:-$CREATE_BOOT_VOLUME_SIZE}"
     if [[ -n "$boot_volume_size" ]]; then
         while [[ ! "$boot_volume_size" =~ ^[0-9]+$ || "$boot_volume_size" -lt 1 || "$boot_volume_size" -gt 32768 ]]; do
-            echo -e "${RED}请输入有效的启动盘大小，范围 1-32768 GB${NC}"
+            printf '%b\n' "${RED}请输入有效的启动盘大小，范围 1-32768 GB${NC}"
             read -p "启动盘大小 (GB): " boot_volume_size
         done
     fi
@@ -5472,7 +5484,7 @@ configure_create_instance_params() {
     read -p "启动盘性能 (VPU/GB) [默认: ${CREATE_BOOT_VOLUME_VPUS_PER_GB}，支持 10-120 且为 10 的倍数]: " input_value
     boot_volume_vpus_per_gb="${input_value:-$CREATE_BOOT_VOLUME_VPUS_PER_GB}"
     while [[ ! "$boot_volume_vpus_per_gb" =~ ^[0-9]+$ || "$boot_volume_vpus_per_gb" -lt 10 || "$boot_volume_vpus_per_gb" -gt 120 || $((boot_volume_vpus_per_gb % 10)) -ne 0 ]]; do
-        echo -e "${RED}请输入有效的启动盘性能，范围 10-120 且必须是 10 的倍数${NC}"
+        printf '%b\n' "${RED}请输入有效的启动盘性能，范围 10-120 且必须是 10 的倍数${NC}"
         read -p "启动盘性能 (VPU/GB): " boot_volume_vpus_per_gb
     done
     autosave_create_instance_progress "$draft_file" "$compartment_id" "$availability_domain" "$subnet_id" "$image_id" "$image_os" "$image_os_version" "$ssh_public_key" "$shape" "$ocpus" "$memory_gbs" "$boot_volume_size" "$boot_volume_vpus_per_gb" "$display_name" "$assign_public_ip" "$CREATE_RETRY_INTERVAL"
@@ -5480,19 +5492,19 @@ configure_create_instance_params() {
     read -p "后台重试间隔 (秒) [默认: ${CREATE_RETRY_INTERVAL}]: " input_value
     retry_interval="${input_value:-$CREATE_RETRY_INTERVAL}"
     while [[ ! "$retry_interval" =~ ^[0-9]+$ ]]; do
-        echo -e "${RED}请输入有效的重试间隔${NC}"
+        printf '%b\n' "${RED}请输入有效的重试间隔${NC}"
         read -p "后台重试间隔 (秒): " retry_interval
     done
     autosave_create_instance_progress "$draft_file" "$compartment_id" "$availability_domain" "$subnet_id" "$image_id" "$image_os" "$image_os_version" "$ssh_public_key" "$shape" "$ocpus" "$memory_gbs" "$boot_volume_size" "$boot_volume_vpus_per_gb" "$display_name" "$assign_public_ip" "$retry_interval"
 
-    echo ""
-    echo -e "${CYAN}当前草稿预览:${NC}"
+    printf '%s\n' ""
+    printf '%b\n' "${CYAN}当前草稿预览:${NC}"
     show_create_instance_config_summary "$draft_file"
     read -p "确认完成本次设置? [Y/n]: " -r
     [[ -z "$REPLY" ]] && REPLY="y"
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         log_info "本次设置未确认，但当前进度已自动保存在草稿: $draft_file"
-        trap 'echo -e "\n${YELLOW}操作已取消${NC}"; exit 0' INT TERM
+        trap 'printf "%b\n" "\n${YELLOW}操作已取消${NC}"; exit 0' INT TERM
         pause
         return 0
     fi
@@ -5500,37 +5512,37 @@ configure_create_instance_params() {
     cp "$draft_file" "$config_file"
     rm -f "$draft_file"
     log_success "创建实例配置已保存到: $config_file"
-    trap 'echo -e "\n${YELLOW}操作已取消${NC}"; exit 0' INT TERM
+    trap 'printf "%b\n" "\n${YELLOW}操作已取消${NC}"; exit 0' INT TERM
     pause
 }
 
 show_saved_create_instance_config() {
     show_header
-    echo -e "${BOLD}[5] 创建实例 - 查看已保存配置${NC}"
-    echo "========================================"
-    echo ""
+    printf '%b\n' "${BOLD}[5] 创建实例 - 查看已保存配置${NC}"
+    printf '%s\n' "========================================"
+    printf '%s\n' ""
 
     local has_any=false
 
     if [[ -f "$CREATE_INSTANCE_CONFIG" ]]; then
-        echo -e "${GREEN}已确认配置${NC}"
+        printf '%b\n' "${GREEN}已确认配置${NC}"
         show_create_instance_config_summary "$CREATE_INSTANCE_CONFIG"
-        echo -e "${BOLD}JSON 内容预览:${NC}"
-        echo "----------------------------------------"
+        printf '%b\n' "${BOLD}JSON 内容预览:${NC}"
+        printf '%s\n' "----------------------------------------"
         jq '.' "$CREATE_INSTANCE_CONFIG"
-        echo "----------------------------------------"
-        echo ""
+        printf '%s\n' "----------------------------------------"
+        printf '%s\n' ""
         has_any=true
     fi
 
     if [[ -f "$CREATE_INSTANCE_DRAFT_CONFIG" ]]; then
-        echo -e "${YELLOW}未完成草稿${NC}"
+        printf '%b\n' "${YELLOW}未完成草稿${NC}"
         show_create_instance_config_summary "$CREATE_INSTANCE_DRAFT_CONFIG"
-        echo -e "${BOLD}JSON 内容预览:${NC}"
-        echo "----------------------------------------"
+        printf '%b\n' "${BOLD}JSON 内容预览:${NC}"
+        printf '%s\n' "----------------------------------------"
         jq '.' "$CREATE_INSTANCE_DRAFT_CONFIG"
-        echo "----------------------------------------"
-        echo ""
+        printf '%s\n' "----------------------------------------"
+        printf '%s\n' ""
         has_any=true
     fi
 
@@ -5710,9 +5722,9 @@ show_created_instance_summary() {
     local lifecycle_state="N/A"
     local shape="N/A"
     if [[ -n "$detail_json" ]]; then
-        display_name=$(echo "$detail_json" | jq -r '.data["display-name"] // "N/A"' 2>/dev/null)
-        lifecycle_state=$(echo "$detail_json" | jq -r '.data["lifecycle-state"] // "N/A"' 2>/dev/null)
-        shape=$(echo "$detail_json" | jq -r '.data.shape // "N/A"' 2>/dev/null)
+        display_name=$(printf '%s\n' "$detail_json" | jq -r '.data["display-name"] // "N/A"' 2>/dev/null)
+        lifecycle_state=$(printf '%s\n' "$detail_json" | jq -r '.data["lifecycle-state"] // "N/A"' 2>/dev/null)
+        shape=$(printf '%s\n' "$detail_json" | jq -r '.data.shape // "N/A"' 2>/dev/null)
     fi
 
     local vnics_json
@@ -5723,21 +5735,21 @@ show_created_instance_summary() {
         --output json 2>/dev/null)
 
     if [[ -n "$vnics_json" ]]; then
-        private_ip=$(echo "$vnics_json" | jq -r '.data[0]["private-ip"] // "N/A"' 2>/dev/null)
-        public_ip=$(echo "$vnics_json" | jq -r '.data[0]["public-ip"] // "N/A"' 2>/dev/null)
+        private_ip=$(printf '%s\n' "$vnics_json" | jq -r '.data[0]["private-ip"] // "N/A"' 2>/dev/null)
+        public_ip=$(printf '%s\n' "$vnics_json" | jq -r '.data[0]["public-ip"] // "N/A"' 2>/dev/null)
     fi
 
-    echo ""
-    echo -e "${BOLD}实例创建结果摘要${NC}"
-    echo "----------------------------------------"
-    echo "实例名称:      $display_name"
-    echo "实例 OCID:     $instance_id"
-    echo "实例状态:      $lifecycle_state"
-    echo "实例规格:      $shape"
-    echo "私网 IP:       $private_ip"
-    echo "公网 IP:       $public_ip"
-    echo "----------------------------------------"
-    echo ""
+    printf '%s\n' ""
+    printf '%b\n' "${BOLD}实例创建结果摘要${NC}"
+    printf '%s\n' "----------------------------------------"
+    printf '%s\n' "实例名称:      $display_name"
+    printf '%s\n' "实例 OCID:     $instance_id"
+    printf '%s\n' "实例状态:      $lifecycle_state"
+    printf '%s\n' "实例规格:      $shape"
+    printf '%s\n' "私网 IP:       $private_ip"
+    printf '%s\n' "公网 IP:       $public_ip"
+    printf '%s\n' "----------------------------------------"
+    printf '%s\n' ""
 }
 
 check_existing_create_task() {
@@ -5764,11 +5776,11 @@ check_existing_create_task() {
                 if kill -0 "$pid" 2>/dev/null; then
                     local task_id
                     task_id=$(jq -r '.task_id // empty' "$task_info" 2>/dev/null)
-                    echo ""
+                    printf '%s\n' ""
                     log_warn "检测到同名实例创建任务仍在运行"
-                    echo "  任务 ID: $task_id"
-                    echo "  实例名称: $display_name"
-                    echo ""
+                    printf '%s\n' "  任务 ID: $task_id"
+                    printf '%s\n' "  实例名称: $display_name"
+                    printf '%s\n' ""
                     read -p "是否停止现有任务并创建新任务? [y/N]: " -r
                     [[ -z "$REPLY" ]] && REPLY="n"
                     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
@@ -5803,7 +5815,7 @@ find_existing_created_instance() {
 
     [[ -n "$instances_json" ]] || return 1
 
-    echo "$instances_json" | jq -r --arg display_name "$display_name" '
+    printf '%s\n' "$instances_json" | jq -r --arg display_name "$display_name" '
         .data[]
         | select(.["display-name"] == $display_name)
         | select((.["lifecycle-state"] // "") != "TERMINATED")
@@ -5872,16 +5884,16 @@ create_instance_background_task() {
     ) &>"$task_path/task.log" &
 
     local pid=$!
-    echo "$pid" > "$task_path/task.pid"
+    printf '%s\n' "$pid" > "$task_path/task.pid"
 
     log_success "创建实例后台任务已创建"
-    echo ""
-    echo "任务 ID: $task_id"
-    echo "实例名称: $display_name"
-    echo "日志文件: $task_path/task.log"
-    echo ""
-    echo -e "${CYAN}提示: 任务将在后台持续执行，可在主菜单“管理后台任务”中查看进度${NC}"
-    echo ""
+    printf '%s\n' ""
+    printf '%s\n' "任务 ID: $task_id"
+    printf '%s\n' "实例名称: $display_name"
+    printf '%s\n' "日志文件: $task_path/task.log"
+    printf '%s\n' ""
+    printf '%b\n' "${CYAN}提示: 任务将在后台持续执行，可在主菜单“管理后台任务”中查看进度${NC}"
+    printf '%s\n' ""
 }
 
 exec_create_instance_task() {
@@ -5892,15 +5904,15 @@ exec_create_instance_task() {
     local log_file="$task_path/task.log"
 
     log_info() {
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] $1" >> "$log_file"
+        printf '%s\n' "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] $1" >> "$log_file"
     }
 
     log_error() {
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] $1" >> "$log_file"
+        printf '%s\n' "[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] $1" >> "$log_file"
     }
 
     log_success() {
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [SUCCESS] $1" >> "$log_file"
+        printf '%s\n' "[$(date '+%Y-%m-%d %H:%M:%S')] [SUCCESS] $1" >> "$log_file"
     }
 
     update_task_status() {
@@ -5970,7 +5982,7 @@ exec_create_instance_task() {
 
         if [[ $exit_code -eq 0 ]]; then
             local instance_id
-            instance_id=$(echo "$result" | jq -r '.data.id // empty' 2>/dev/null)
+            instance_id=$(printf '%s\n' "$result" | jq -r '.data.id // empty' 2>/dev/null)
             log_success "实例创建成功"
             [[ -n "$instance_id" ]] && log_info "实例 OCID: $instance_id"
             update_task_status "$attempt" "success" "" "$instance_id"
@@ -5983,7 +5995,7 @@ exec_create_instance_task() {
         fi
 
         local error_msg
-        error_msg=$(echo "$result" | jq -r '.message // .error.message // empty' 2>/dev/null)
+        error_msg=$(printf '%s\n' "$result" | jq -r '.message // .error.message // empty' 2>/dev/null)
         [[ -z "$error_msg" ]] && error_msg="$result"
         log_error "实例创建失败: $error_msg"
         update_task_status "$attempt" "failed" "$error_msg" ""
@@ -5996,9 +6008,9 @@ create_instance_from_saved_config() {
     local config_file="$CREATE_INSTANCE_CONFIG"
 
     show_header
-    echo -e "${BOLD}[5] 创建实例 - 使用已保存配置${NC}"
-    echo "========================================"
-    echo ""
+    printf '%b\n' "${BOLD}[5] 创建实例 - 使用已保存配置${NC}"
+    printf '%s\n' "========================================"
+    printf '%s\n' ""
 
     if ! check_oci_cli; then
         pause
@@ -6012,10 +6024,10 @@ create_instance_from_saved_config() {
 
     if [[ ! -f "$config_file" && -f "$CREATE_INSTANCE_DRAFT_CONFIG" ]]; then
         log_warn "当前只有未确认草稿，尚无正式创建配置"
-        echo ""
-        echo "提示:"
-        echo "  - 先进入“获取关键参数并保存”并确认完成"
-        echo "  - 或手动将草稿确认后再创建实例"
+        printf '%s\n' ""
+        printf '%s\n' "提示:"
+        printf '%s\n' "  - 先进入“获取关键参数并保存”并确认完成"
+        printf '%s\n' "  - 或手动将草稿确认后再创建实例"
         pause
         return 1
     fi
@@ -6027,11 +6039,11 @@ create_instance_from_saved_config() {
 
     show_create_instance_config_summary "$config_file"
 
-    echo "创建方式:"
-    echo "  1) 前台执行一次"
-    echo "  2) 后台持续重试"
-    echo "  0) 返回"
-    echo ""
+    printf '%s\n' "创建方式:"
+    printf '%s\n' "  1) 前台执行一次"
+    printf '%s\n' "  2) 后台持续重试"
+    printf '%s\n' "  0) 返回"
+    printf '%s\n' ""
 
     local create_mode
     read -p "请选择创建方式 [默认: 2]: " create_mode
@@ -6048,23 +6060,23 @@ create_instance_from_saved_config() {
                 return 1
             fi
 
-            echo ""
+            printf '%s\n' ""
             log_info "开始创建实例: $display_name"
             result=$(launch_instance_from_config "$config_file" 2>&1)
             exit_code=$?
 
             if [[ $exit_code -eq 0 ]]; then
-                instance_id=$(echo "$result" | jq -r '.data.id // empty' 2>/dev/null)
+                instance_id=$(printf '%s\n' "$result" | jq -r '.data.id // empty' 2>/dev/null)
                 log_success "实例创建成功"
-                [[ -n "$instance_id" ]] && echo "实例 OCID: $instance_id"
+                [[ -n "$instance_id" ]] && printf '%s\n' "实例 OCID: $instance_id"
                 send_create_success_notification "$config_file" "$instance_id"
                 [[ -n "$instance_id" ]] && notify_created_instance_boot_result "$config_file" "$instance_id" || true
             else
                 log_error "实例创建失败"
-                echo ""
-                echo "错误输出:"
-                echo "$result"
-                echo ""
+                printf '%s\n' ""
+                printf '%s\n' "错误输出:"
+                printf '%s\n' "$result"
+                printf '%s\n' ""
                 read -p "是否创建后台任务自动重试? [Y/n]: " -r
                 [[ -z "$REPLY" ]] && REPLY="y"
                 if [[ $REPLY =~ ^[Yy]$ ]]; then
@@ -6276,9 +6288,9 @@ beginner_create_instance() {
     local quick_config="${DATA_DIR}/create_instance_beginner.json"
 
     show_header
-    echo -e "${BOLD}[5] 创建实例 - 一键创建实例${NC}"
-    echo "========================================"
-    echo ""
+    printf '%b\n' "${BOLD}[5] 创建实例 - 一键创建实例${NC}"
+    printf '%s\n' "========================================"
+    printf '%s\n' ""
 
     if ! check_oci_cli; then
         pause
@@ -6295,20 +6307,20 @@ beginner_create_instance() {
     fi
 
     if ! prepare_beginner_create_config "$quick_config" "$source_config"; then
-        echo ""
-        echo "提示: 一键创建实例会复用区间默认值，并查询可用性域、子网和镜像 ID。"
-        echo "      查询结果中如包含已保存值则继续使用已保存值，否则使用第一个查询结果。"
-        echo "      如查询不到，请先确认 OCI 权限，或选择“获取关键参数并保存”手动处理。"
+        printf '%s\n' ""
+        printf '%s\n' "提示: 一键创建实例会复用区间默认值，并查询可用性域、子网和镜像 ID。"
+        printf '%s\n' "      查询结果中如包含已保存值则继续使用已保存值，否则使用第一个查询结果。"
+        printf '%s\n' "      如查询不到，请先确认 OCI 权限，或选择“获取关键参数并保存”手动处理。"
         pause
         return 1
     fi
 
     show_create_instance_config_summary "$quick_config"
-    echo "执行方式:"
-    echo "  1) 前台执行一次"
-    echo "  2) 后台持续重试"
-    echo "  0) 返回"
-    echo ""
+    printf '%s\n' "执行方式:"
+    printf '%s\n' "  1) 前台执行一次"
+    printf '%s\n' "  2) 后台持续重试"
+    printf '%s\n' "  0) 返回"
+    printf '%s\n' ""
     read -p "请选择执行方式 [默认: 2]: " -r
     local create_mode="${REPLY:-2}"
 
@@ -6319,15 +6331,15 @@ beginner_create_instance() {
             result=$(launch_instance_from_config "$quick_config" 2>&1)
             exit_code=$?
             if [[ $exit_code -eq 0 ]]; then
-                instance_id=$(echo "$result" | jq -r '.data.id // empty' 2>/dev/null)
+                instance_id=$(printf '%s\n' "$result" | jq -r '.data.id // empty' 2>/dev/null)
                 log_success "实例创建成功"
-                [[ -n "$instance_id" ]] && echo "实例 OCID: $instance_id"
+                [[ -n "$instance_id" ]] && printf '%s\n' "实例 OCID: $instance_id"
                 send_create_success_notification "$quick_config" "$instance_id"
                 [[ -n "$instance_id" ]] && notify_created_instance_boot_result "$quick_config" "$instance_id" || true
             else
                 log_error "实例创建失败"
-                echo "$result"
-                echo ""
+                printf '%s\n' "$result"
+                printf '%s\n' ""
                 read -p "是否创建后台任务自动重试? [Y/n]: " -r
                 [[ -z "$REPLY" ]] && REPLY="y"
                 [[ $REPLY =~ ^[Yy]$ ]] && create_instance_background_task "$quick_config" "$(jq -r '.retryInterval // 10' "$quick_config")"
@@ -6350,34 +6362,34 @@ beginner_create_instance() {
 manage_create_instance() {
     while true; do
         show_header
-        echo -e "${BOLD}[5] 创建实例${NC}"
-        echo "========================================"
-        echo ""
+        printf '%b\n' "${BOLD}[5] 创建实例${NC}"
+        printf '%s\n' "========================================"
+        printf '%s\n' ""
 
         if [[ -f "$CREATE_INSTANCE_CONFIG" ]]; then
             local saved_display_name
             saved_display_name=$(jq -r '.displayName // "未命名实例"' "$CREATE_INSTANCE_CONFIG" 2>/dev/null)
-            echo -e "${GREEN}✓${NC} 已确认配置: $saved_display_name"
+            printf '%b\n' "${GREEN}✓${NC} 已确认配置: $saved_display_name"
         else
-            echo -e "${YELLOW}!${NC} 尚未保存已确认的创建实例配置"
+            printf '%b\n' "${YELLOW}!${NC} 尚未保存已确认的创建实例配置"
         fi
         if [[ -f "$CREATE_INSTANCE_DRAFT_CONFIG" ]]; then
             local draft_display_name
             draft_display_name=$(jq -r '.displayName // "未命名实例"' "$CREATE_INSTANCE_DRAFT_CONFIG" 2>/dev/null)
-            echo -e "${YELLOW}!${NC} 存在未完成草稿: $draft_display_name"
+            printf '%b\n' "${YELLOW}!${NC} 存在未完成草稿: $draft_display_name"
         fi
-        echo ""
+        printf '%s\n' ""
         load_beginner_defaults
-        echo "一键创建默认配置: ${BEGINNER_CREATE_SHAPE_DEFAULT} / ${BEGINNER_CREATE_OCPUS_DEFAULT} OCPU / ${BEGINNER_CREATE_MEMORY_GB_DEFAULT} GB / ${BEGINNER_CREATE_BOOT_VOLUME_GB_DEFAULT} GB 启动盘"
-        echo ""
-        echo "操作选项:"
-        echo "  1) 一键创建实例"
-        echo "  2) 获取关键参数并保存"
-        echo "  3) 查看已保存配置"
-        echo "  4) 使用已保存配置创建实例"
-        echo "  5) 修改一键创建实例默认值"
-        echo "  0) 返回主菜单"
-        echo ""
+        printf '%s\n' "一键创建默认配置: ${BEGINNER_CREATE_SHAPE_DEFAULT} / ${BEGINNER_CREATE_OCPUS_DEFAULT} OCPU / ${BEGINNER_CREATE_MEMORY_GB_DEFAULT} GB / ${BEGINNER_CREATE_BOOT_VOLUME_GB_DEFAULT} GB 启动盘"
+        printf '%s\n' ""
+        printf '%s\n' "操作选项:"
+        printf '%s\n' "  1) 一键创建实例"
+        printf '%s\n' "  2) 获取关键参数并保存"
+        printf '%s\n' "  3) 查看已保存配置"
+        printf '%s\n' "  4) 使用已保存配置创建实例"
+        printf '%s\n' "  5) 修改一键创建实例默认值"
+        printf '%s\n' "  0) 返回主菜单"
+        printf '%s\n' ""
 
         read -p "请选择操作: " -r
 
@@ -6413,9 +6425,9 @@ manage_instances() {
 
     while true; do
         show_header
-        echo -e "${BOLD}[4] 管理实例${NC}"
-        echo "========================================"
-        echo ""
+        printf '%b\n' "${BOLD}[4] 管理实例${NC}"
+        printf '%s\n' "========================================"
+        printf '%s\n' ""
 
         # 列出实例
         log_info "正在获取实例列表..."
@@ -6442,7 +6454,7 @@ manage_instances() {
         fi
 
         local instance_count
-        instance_count=$(echo "$instances_json" | jq '.data | length')
+        instance_count=$(printf '%s\n' "$instances_json" | jq '.data | length')
 
         if [[ "$instance_count" -eq 0 ]]; then
             log_warn "未找到任何实例"
@@ -6451,11 +6463,11 @@ manage_instances() {
         fi
 
         log_success "找到 $instance_count 个实例"
-        echo ""
+        printf '%s\n' ""
 
         # 显示实例列表（卡片式）- 只获取一次数据
-        echo -e "${BOLD}实例列表${NC}"
-        echo -e "${BOLD}========================================${NC}"
+        printf '%b\n' "${BOLD}实例列表${NC}"
+        printf '%b\n' "${BOLD}========================================${NC}"
 
         # 清空并重新填充全局数组
         INSTANCE_OCIDS=()
@@ -6472,11 +6484,11 @@ manage_instances() {
 
             if [[ -n "$detail_json" ]]; then
                 local name state ocpus memory shape
-                name=$(echo "$detail_json" | jq -r '.data["display-name"] // "N/A"')
-                state=$(echo "$detail_json" | jq -r '.data["lifecycle-state"] // "N/A"')
-                ocpus=$(echo "$detail_json" | jq -r '.data["shape-config"].ocpus // "N/A"')
-                memory=$(echo "$detail_json" | jq -r '.data["shape-config"]["memory-in-gbs"] // "N/A"')
-                shape=$(echo "$detail_json" | jq -r '.data.shape // "N/A"')
+                name=$(printf '%s\n' "$detail_json" | jq -r '.data["display-name"] // "N/A"')
+                state=$(printf '%s\n' "$detail_json" | jq -r '.data["lifecycle-state"] // "N/A"')
+                ocpus=$(printf '%s\n' "$detail_json" | jq -r '.data["shape-config"].ocpus // "N/A"')
+                memory=$(printf '%s\n' "$detail_json" | jq -r '.data["shape-config"]["memory-in-gbs"] // "N/A"')
+                shape=$(printf '%s\n' "$detail_json" | jq -r '.data.shape // "N/A"')
 
                 # 状态颜色
                 local state_color
@@ -6487,32 +6499,32 @@ manage_instances() {
                 esac
 
                 # 显示实例卡片（完整 OCID）
-                echo -e "序号 #${idx}  ${name}"
-                echo -e "  状态:  ${state_color}${state}${NC}"
-                echo -e "  配置:  ${ocpus} OCPU / ${memory} GB"
-                echo -e "  形状:  ${shape}"
-                echo -e "  OCID:  ${instance_ocid}"
-                echo ""
+                printf '%b\n' "序号 #${idx}  ${name}"
+                printf '%b\n' "  状态:  ${state_color}${state}${NC}"
+                printf '%b\n' "  配置:  ${ocpus} OCPU / ${memory} GB"
+                printf '%b\n' "  形状:  ${shape}"
+                printf '%b\n' "  OCID:  ${instance_ocid}"
+                printf '%s\n' ""
             fi
-        done < <(echo "$instances_json" | jq -r '.data[].id')
+        done < <(printf '%s\n' "$instances_json" | jq -r '.data[].id')
 
-        echo -e "${BOLD}========================================${NC}"
-        echo -e "${CYAN}后续操作请输入实例名前面的序号，例如看到“序号 #1”就输入 1。${NC}"
-        echo ""
+        printf '%b\n' "${BOLD}========================================${NC}"
+        printf '%b\n' "${CYAN}后续操作请输入实例名前面的序号，例如看到“序号 #1”就输入 1。${NC}"
+        printf '%s\n' ""
 
         # 内层循环：操作选项（不重新获取数据）
         while true; do
             load_beginner_defaults
-            echo "操作选项:"
-            echo "  1) 一键修改实例配置 (${BEGINNER_UPDATE_OCPUS_DEFAULT} OCPU / ${BEGINNER_UPDATE_MEMORY_GB_DEFAULT} GB / ${BEGINNER_UPDATE_BOOT_VOLUME_GB_DEFAULT} GB 启动盘)"
-            echo "  2) 查看实例完整配置    (JSON格式)"
-            echo "  3) 输入配置参数更新    (交互式输入)"
-            echo "  4) 使用配置文件更新    (JSON文件)"
-            echo "  5) 停止实例"
-            echo "  6) 启动实例"
-            echo "  7) 修改一键修改实例配置默认值"
-            echo "  0) 返回主菜单"
-            echo ""
+            printf '%s\n' "操作选项:"
+            printf '%s\n' "  1) 一键修改实例配置 (${BEGINNER_UPDATE_OCPUS_DEFAULT} OCPU / ${BEGINNER_UPDATE_MEMORY_GB_DEFAULT} GB / ${BEGINNER_UPDATE_BOOT_VOLUME_GB_DEFAULT} GB 启动盘)"
+            printf '%s\n' "  2) 查看实例完整配置    (JSON格式)"
+            printf '%s\n' "  3) 输入配置参数更新    (交互式输入)"
+            printf '%s\n' "  4) 使用配置文件更新    (JSON文件)"
+            printf '%s\n' "  5) 停止实例"
+            printf '%s\n' "  6) 启动实例"
+            printf '%s\n' "  7) 修改一键修改实例配置默认值"
+            printf '%s\n' "  0) 返回主菜单"
+            printf '%s\n' ""
 
             read -p "请选择操作: " -r
 
@@ -6533,23 +6545,23 @@ manage_instances() {
                             --output json 2>/dev/null)
 
                         if [[ -n "$detail_json" ]]; then
-                            echo ""
-                            echo -e "${BOLD}========================================${NC}"
-                            echo -e "${BOLD}实例完整配置 (JSON) #${choice}${NC}"
-                            echo -e "${BOLD}========================================${NC}"
-                            echo "$detail_json" | jq '.'
-                            echo ""
+                            printf '%s\n' ""
+                            printf '%b\n' "${BOLD}========================================${NC}"
+                            printf '%b\n' "${BOLD}实例完整配置 (JSON) #${choice}${NC}"
+                            printf '%b\n' "${BOLD}========================================${NC}"
+                            printf '%s\n' "$detail_json" | jq '.'
+                            printf '%s\n' ""
 
                             read -p "是否保存到文件? [Y/n]: " save_json
                             [[ -z "$save_json" ]] && save_json="y"
 
                             if [[ $save_json =~ ^[Yy]$ ]]; then
                                 local name
-                                name=$(echo "$detail_json" | jq -r '.data["display-name"] // "instance"')
+                                name=$(printf '%s\n' "$detail_json" | jq -r '.data["display-name"] // "instance"')
                                 local json_file="instance_${name}_$(date +%Y%m%d-%H%M%S).json"
-                                echo "$detail_json" > "$json_file"
+                                printf '%s\n' "$detail_json" > "$json_file"
                                 log_success "已保存到: $json_file"
-                                echo ""
+                                printf '%s\n' ""
                             fi
                         else
                             log_error "获取实例配置失败"
@@ -6609,16 +6621,16 @@ update_by_input_params() {
     local instance_count=$1
 
     while true; do
-        echo ""
-        echo -e "${BOLD}----------------------------------------${NC}"
-        echo -e "${BOLD}输入配置参数更新${NC}"
-        echo -e "${BOLD}----------------------------------------${NC}"
-        echo ""
-        echo "更新方式:"
-        echo "  1) 直接更新            (更新成功自动重启)"
-        echo "  2) 完整更新流程        (停止→更新→启动)"
-        echo "  0) 返回上一级"
-        echo ""
+        printf '%s\n' ""
+        printf '%b\n' "${BOLD}----------------------------------------${NC}"
+        printf '%b\n' "${BOLD}输入配置参数更新${NC}"
+        printf '%b\n' "${BOLD}----------------------------------------${NC}"
+        printf '%s\n' ""
+        printf '%s\n' "更新方式:"
+        printf '%s\n' "  1) 直接更新            (更新成功自动重启)"
+        printf '%s\n' "  2) 完整更新流程        (停止→更新→启动)"
+        printf '%s\n' "  0) 返回上一级"
+        printf '%s\n' ""
 
         read -p "请选择更新方式: " -r
 
@@ -6660,17 +6672,17 @@ update_by_config_file() {
     local instance_count=$1
 
     while true; do
-        echo ""
-        echo -e "${BOLD}----------------------------------------${NC}"
-        echo -e "${BOLD}使用配置文件更新${NC}"
-        echo -e "${BOLD}----------------------------------------${NC}"
-        echo ""
-        echo "操作选项:"
-        echo "  1) 生成配置模板        (从实例生成 JSON 模板)"
-        echo "  2) 直接更新            (使用配置文件，不停止实例)"
-        echo "  3) 完整更新流程        (停止→更新→启动)"
-        echo "  0) 返回上一级"
-        echo ""
+        printf '%s\n' ""
+        printf '%b\n' "${BOLD}----------------------------------------${NC}"
+        printf '%b\n' "${BOLD}使用配置文件更新${NC}"
+        printf '%b\n' "${BOLD}----------------------------------------${NC}"
+        printf '%s\n' ""
+        printf '%s\n' "操作选项:"
+        printf '%s\n' "  1) 生成配置模板        (从实例生成 JSON 模板)"
+        printf '%s\n' "  2) 直接更新            (使用配置文件，不停止实例)"
+        printf '%s\n' "  3) 完整更新流程        (停止→更新→启动)"
+        printf '%s\n' "  0) 返回上一级"
+        printf '%s\n' ""
 
         read -p "请选择操作: " -r
 
@@ -6708,23 +6720,23 @@ update_by_config_file() {
 manage_background_tasks() {
     while true; do
         show_header
-        echo -e "${BOLD}[6] 管理后台任务${NC}"
-        echo "========================================"
-        echo ""
+        printf '%b\n' "${BOLD}[6] 管理后台任务${NC}"
+        printf '%s\n' "========================================"
+        printf '%s\n' ""
 
         # 列出所有任务
         list_background_tasks
 
         local task_count=${#TASK_IDS[@]}
 
-        echo "操作选项:"
-        echo "  1) 查看任务详情"
-        echo "  2) 停止任务"
-        echo "  3) 恢复任务"
-        echo "  4) 删除任务记录"
-        echo "  5) 刷新列表"
-        echo "  0) 返回主菜单"
-        echo ""
+        printf '%s\n' "操作选项:"
+        printf '%s\n' "  1) 查看任务详情"
+        printf '%s\n' "  2) 停止任务"
+        printf '%s\n' "  3) 恢复任务"
+        printf '%s\n' "  4) 删除任务记录"
+        printf '%s\n' "  5) 刷新列表"
+        printf '%s\n' "  0) 返回主菜单"
+        printf '%s\n' ""
 
         read -p "请选择操作: " -r
 
@@ -6804,82 +6816,82 @@ manage_background_tasks() {
 # ================================
 show_help() {
     show_header
-    echo -e "${BOLD}[H] 帮助信息${NC}"
-    echo "========================================"
-    echo ""
+    printf '%b\n' "${BOLD}[H] 帮助信息${NC}"
+    printf '%s\n' "========================================"
+    printf '%s\n' ""
 
-    echo -e "${BOLD}主菜单功能说明:${NC}"
-    echo ""
-    echo "  [1] 检查 OCI 环境"
-    echo "      检查 OCI CLI、jq、配置文件和连接状态"
-    echo ""
-    echo "  [2] 初始化 OCI 配置"
-    echo "      配置 OCI CLI (${OCI_CONFIG_FILE})"
-    echo "      需要提供: 用户 OCID、指纹、租户 OCID、区域、私钥路径"
-    echo ""
-    echo "  [3] 查看 OCI 配置"
-    echo "      显示 OCI CLI 配置文件内容"
-    echo "      测试 OCI 连接"
-    echo ""
-    echo "  [4] 管理实例"
-    echo "      列出所有实例，支持以下操作:"
-    echo "        - 查看实例完整配置 (JSON)"
-    echo "        - 输入配置参数更新 (交互式)"
-    echo "        - 使用配置文件更新 (JSON)"
-    echo "        - 停止/启动实例"
-    echo ""
-    echo "  [5] 创建实例"
-    echo "      获取创建实例的关键参数并保存配置"
-    echo "      使用已保存配置执行前台或后台创建"
-    echo "      后台创建失败后自动重试并发送通知"
-    echo ""
-    echo "  [6] 管理后台任务"
-    echo "      查看所有后台任务，支持以下操作:"
-    echo "        - 查看任务详情和日志"
-    echo "        - 停止/恢复/删除任务"
-    echo "        - 实时查看日志"
-    echo ""
-    echo "  [7] 配置通知"
-    echo "      配置邮件或 Telegram 机器人通知"
-    echo "      更新/创建成功后按所选方式自动发送通知"
-    echo "      支持测试通知发送"
-    echo ""
-    echo "  [8] 卸载脚本"
-    echo "      交互式卸载辅助依赖、OCI 配置、日志和脚本数据"
-    echo "      可选删除本地脚本文件"
-    echo ""
-    echo -e "${BOLD}更新方式说明:${NC}"
-    echo ""
-    echo "  输入配置参数更新:"
-    echo "    - 直接更新: 不停止实例，直接修改配置"
-    echo "    - 完整流程: 停止→更新→启动"
-    echo ""
-    echo "  使用配置文件更新:"
-    echo "    - 生成 JSON 配置模板"
-    echo "    - 直接更新或完整流程"
-    echo ""
-    echo "  创建实例:"
-    echo "    - 保存关键参数到 create_instance_config.json"
-    echo "    - 使用已保存配置前台执行或后台重试"
-    echo ""
-    echo -e "${BOLD}配置文件位置:${NC}"
-    echo "   OCI CLI 配置: $OCI_CONFIG_FILE"
-    echo "   私钥文件:     $OCI_KEY_FILE_DEFAULT"
-    echo "   数据目录:     $DATA_DIR"
-    echo "   创建配置:     $CREATE_INSTANCE_CONFIG"
-    echo "   通知配置:     $EMAIL_CONFIG_FILE"
-    echo "   任务目录:     $TASK_DIR/"
-    echo ""
-    echo -e "${BOLD}如何获取 OCI 配置信息:${NC}"
-    echo "   1. 登录 OCI 控制台: https://cloud.oracle.com"
-    echo "   2. 进入 用户设置 -> API 密钥"
-    echo "   3. 添加或查看 API 密钥，获取:"
-    echo "      - 用户 OCID"
-    echo "      - 指纹"
-    echo "      - 租户 OCID"
-    echo "   4. 下载或创建私钥文件"
-    echo ""
-    echo "========================================"
+    printf '%b\n' "${BOLD}主菜单功能说明:${NC}"
+    printf '%s\n' ""
+    printf '%s\n' "  [1] 检查 OCI 环境"
+    printf '%s\n' "      检查 OCI CLI、jq、配置文件和连接状态"
+    printf '%s\n' ""
+    printf '%s\n' "  [2] 初始化 OCI 配置"
+    printf '%s\n' "      配置 OCI CLI (${OCI_CONFIG_FILE})"
+    printf '%s\n' "      需要提供: 用户 OCID、指纹、租户 OCID、区域、私钥路径"
+    printf '%s\n' ""
+    printf '%s\n' "  [3] 查看 OCI 配置"
+    printf '%s\n' "      显示 OCI CLI 配置文件内容"
+    printf '%s\n' "      测试 OCI 连接"
+    printf '%s\n' ""
+    printf '%s\n' "  [4] 管理实例"
+    printf '%s\n' "      列出所有实例，支持以下操作:"
+    printf '%s\n' "        - 查看实例完整配置 (JSON)"
+    printf '%s\n' "        - 输入配置参数更新 (交互式)"
+    printf '%s\n' "        - 使用配置文件更新 (JSON)"
+    printf '%s\n' "        - 停止/启动实例"
+    printf '%s\n' ""
+    printf '%s\n' "  [5] 创建实例"
+    printf '%s\n' "      获取创建实例的关键参数并保存配置"
+    printf '%s\n' "      使用已保存配置执行前台或后台创建"
+    printf '%s\n' "      后台创建失败后自动重试并发送通知"
+    printf '%s\n' ""
+    printf '%s\n' "  [6] 管理后台任务"
+    printf '%s\n' "      查看所有后台任务，支持以下操作:"
+    printf '%s\n' "        - 查看任务详情和日志"
+    printf '%s\n' "        - 停止/恢复/删除任务"
+    printf '%s\n' "        - 实时查看日志"
+    printf '%s\n' ""
+    printf '%s\n' "  [7] 配置通知"
+    printf '%s\n' "      配置邮件或 Telegram 机器人通知"
+    printf '%s\n' "      更新/创建成功后按所选方式自动发送通知"
+    printf '%s\n' "      支持测试通知发送"
+    printf '%s\n' ""
+    printf '%s\n' "  [8] 卸载脚本"
+    printf '%s\n' "      交互式卸载辅助依赖、OCI 配置、日志和脚本数据"
+    printf '%s\n' "      可选删除本地脚本文件"
+    printf '%s\n' ""
+    printf '%b\n' "${BOLD}更新方式说明:${NC}"
+    printf '%s\n' ""
+    printf '%s\n' "  输入配置参数更新:"
+    printf '%s\n' "    - 直接更新: 不停止实例，直接修改配置"
+    printf '%s\n' "    - 完整流程: 停止→更新→启动"
+    printf '%s\n' ""
+    printf '%s\n' "  使用配置文件更新:"
+    printf '%s\n' "    - 生成 JSON 配置模板"
+    printf '%s\n' "    - 直接更新或完整流程"
+    printf '%s\n' ""
+    printf '%s\n' "  创建实例:"
+    printf '%s\n' "    - 保存关键参数到 create_instance_config.json"
+    printf '%s\n' "    - 使用已保存配置前台执行或后台重试"
+    printf '%s\n' ""
+    printf '%b\n' "${BOLD}配置文件位置:${NC}"
+    printf '%s\n' "   OCI CLI 配置: $OCI_CONFIG_FILE"
+    printf '%s\n' "   私钥文件:     $OCI_KEY_FILE_DEFAULT"
+    printf '%s\n' "   数据目录:     $DATA_DIR"
+    printf '%s\n' "   创建配置:     $CREATE_INSTANCE_CONFIG"
+    printf '%s\n' "   通知配置:     $EMAIL_CONFIG_FILE"
+    printf '%s\n' "   任务目录:     $TASK_DIR/"
+    printf '%s\n' ""
+    printf '%b\n' "${BOLD}如何获取 OCI 配置信息:${NC}"
+    printf '%s\n' "   1. 登录 OCI 控制台: https://cloud.oracle.com"
+    printf '%s\n' "   2. 进入 用户设置 -> API 密钥"
+    printf '%s\n' "   3. 添加或查看 API 密钥，获取:"
+    printf '%s\n' "      - 用户 OCID"
+    printf '%s\n' "      - 指纹"
+    printf '%s\n' "      - 租户 OCID"
+    printf '%s\n' "   4. 下载或创建私钥文件"
+    printf '%s\n' ""
+    printf '%s\n' "========================================"
 
     pause
 }
@@ -6894,50 +6906,50 @@ show_menu() {
     if [[ -f "$OCI_CONFIG_FILE" ]]; then
         local region
         region=$(grep "^region=" "$OCI_CONFIG_FILE" 2>/dev/null | cut -d'=' -f2)
-        echo -e "${GREEN}✓${NC} OCI 配置已加载: 区域=${region:-未知}"
+        printf '%b\n' "${GREEN}✓${NC} OCI 配置已加载: 区域=${region:-未知}"
     else
-        echo -e "${YELLOW}!${NC} 尚未配置，请先执行 [2] 初始化 OCI 配置"
+        printf '%b\n' "${YELLOW}!${NC} 尚未配置，请先执行 [2] 初始化 OCI 配置"
     fi
 
     # 显示通知配置状态
     if [[ "${NOTIFY_METHOD:-email}" == "none" ]]; then
-        echo -e "${YELLOW}!${NC} 通知已关闭"
+        printf '%b\n' "${YELLOW}!${NC} 通知已关闭"
     elif [[ -f "$EMAIL_CONFIG_FILE" ]]; then
-        echo -e "${GREEN}✓${NC} 通知配置已加载: ${NOTIFY_METHOD:-email}"
+        printf '%b\n' "${GREEN}✓${NC} 通知配置已加载: ${NOTIFY_METHOD:-email}"
     else
-        echo -e "${YELLOW}!${NC} 通知未配置"
+        printf '%b\n' "${YELLOW}!${NC} 通知未配置"
     fi
 
     if [[ -f "$CREATE_INSTANCE_CONFIG" ]]; then
         local create_name
         create_name=$(jq -r '.displayName // "未命名实例"' "$CREATE_INSTANCE_CONFIG" 2>/dev/null)
-        echo -e "${GREEN}✓${NC} 创建实例正式配置已保存: ${create_name}"
+        printf '%b\n' "${GREEN}✓${NC} 创建实例正式配置已保存: ${create_name}"
     else
-        echo -e "${YELLOW}!${NC} 创建实例正式配置未保存"
+        printf '%b\n' "${YELLOW}!${NC} 创建实例正式配置未保存"
     fi
 
     if [[ -f "$CREATE_INSTANCE_DRAFT_CONFIG" ]]; then
         local draft_name
         draft_name=$(jq -r '.displayName // "未命名实例"' "$CREATE_INSTANCE_DRAFT_CONFIG" 2>/dev/null)
-        echo -e "${YELLOW}!${NC} 创建实例草稿待确认: ${draft_name}"
+        printf '%b\n' "${YELLOW}!${NC} 创建实例草稿待确认: ${draft_name}"
     fi
 
-    echo ""
-    echo -e "${BOLD}请选择操作:${NC}"
-    echo ""
-    echo "  1) 检查 OCI 环境"
-    echo "  2) 初始化 OCI 配置"
-    echo "  3) 查看 OCI 配置"
-    echo "  4) 管理实例"
-    echo "  5) 创建实例"
-    echo "  6) 管理后台任务"
-    echo "  7) 配置通知"
-    echo "  8) 卸载脚本"
-    echo "  h) 帮助信息"
-    echo ""
-    echo "  0) 退出"
-    echo ""
-    echo "========================================"
+    printf '%s\n' ""
+    printf '%b\n' "${BOLD}请选择操作:${NC}"
+    printf '%s\n' ""
+    printf '%s\n' "  1) 检查 OCI 环境"
+    printf '%s\n' "  2) 初始化 OCI 配置"
+    printf '%s\n' "  3) 查看 OCI 配置"
+    printf '%s\n' "  4) 管理实例"
+    printf '%s\n' "  5) 创建实例"
+    printf '%s\n' "  6) 管理后台任务"
+    printf '%s\n' "  7) 配置通知"
+    printf '%s\n' "  8) 卸载脚本"
+    printf '%s\n' "  h) 帮助信息"
+    printf '%s\n' ""
+    printf '%s\n' "  0) 退出"
+    printf '%s\n' ""
+    printf '%s\n' "========================================"
 }
 
 # ================================
@@ -6947,7 +6959,7 @@ main() {
     while true; do
         show_menu
         read -p "请输入选项: " -r
-        echo ""
+        printf '%s\n' ""
 
         case $REPLY in
             1) check_oci_environment ;;
@@ -6960,11 +6972,11 @@ main() {
             8) uninstall_script ;;
             h|H) show_help ;;
             0)
-                echo -e "${GREEN}感谢使用，再见！${NC}"
+                printf '%b\n' "${GREEN}感谢使用，再见！${NC}"
                 exit 0
                 ;;
             *)
-                echo -e "${RED}无效选项，请重新选择${NC}"
+                printf '%b\n' "${RED}无效选项，请重新选择${NC}"
                 sleep 1
                 ;;
         esac
@@ -6974,7 +6986,7 @@ main() {
 # ================================
 # 异常处理
 # ================================
-trap 'echo -e "\n${YELLOW}操作已取消${NC}"; exit 0' INT TERM
+trap 'printf "%b\n" "\n${YELLOW}操作已取消${NC}"; exit 0' INT TERM
 
 # ================================
 # 启动主程序
