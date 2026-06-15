@@ -4,8 +4,15 @@ set -u
 DEFAULT_BASE_DIR="/opt/apps"
 BASE_DIR="${APPS_HOME:-$DEFAULT_BASE_DIR}"
 DRY_RUN="${APPS_DRY_RUN:-0}"
-NGINX_CONF_DIR="${APPS_NGINX_CONF_DIR:-/etc/nginx/conf.d}"
-NGINX_SSL_DIR="${APPS_NGINX_SSL_DIR:-/etc/nginx/ssl}"
+PROXY_DIR="${APPS_PROXY_HOME:-${BASE_DIR%/}/proxy}"
+if [[ -z "${APPS_PROXY_HOME:-}" && -n "${APPS_NGINX_CONF_DIR:-}" ]]; then
+    PROXY_DIR="${APPS_NGINX_CONF_DIR%/*}"
+fi
+NGINX_CONF_DIR="${APPS_NGINX_CONF_DIR:-${PROXY_DIR%/}/conf.d}"
+NGINX_SSL_DIR="${APPS_NGINX_SSL_DIR:-${PROXY_DIR%/}/ssl}"
+NGINX_LOG_DIR="${APPS_NGINX_LOG_DIR:-${PROXY_DIR%/}/logs}"
+NGINX_CONTAINER_NAME="${APPS_NGINX_CONTAINER_NAME:-nginx}"
+NGINX_CONTAINER_SSL_DIR="/etc/nginx/ssl"
 ACME_HOME="${APPS_ACME_HOME:-/root/.acme.sh}"
 ACME_SH="${APPS_ACME_SH:-$ACME_HOME/acme.sh}"
 CERT_MODE="${APPS_CERT_MODE:-cloudflare}"
@@ -92,6 +99,18 @@ set_base_dir() {
         return 1
     fi
     BASE_DIR="$path"
+    if [[ -z "${APPS_PROXY_HOME:-}" ]]; then
+        PROXY_DIR="${BASE_DIR%/}/proxy"
+    fi
+    if [[ -z "${APPS_NGINX_CONF_DIR:-}" ]]; then
+        NGINX_CONF_DIR="${PROXY_DIR%/}/conf.d"
+    fi
+    if [[ -z "${APPS_NGINX_SSL_DIR:-}" ]]; then
+        NGINX_SSL_DIR="${PROXY_DIR%/}/ssl"
+    fi
+    if [[ -z "${APPS_NGINX_LOG_DIR:-}" ]]; then
+        NGINX_LOG_DIR="${PROXY_DIR%/}/logs"
+    fi
     if [[ -z "${APPS_BACKUP_DIR:-}" ]]; then
         BACKUP_DIR="${BASE_DIR%/}/.backups"
     fi
@@ -221,6 +240,22 @@ standalone_renew_script_path() {
     printf '%s/renew-standalone.sh\n' "$ssl_dir"
 }
 
+nginx_reload_command() {
+    printf 'docker exec %s nginx -s reload\n' "$NGINX_CONTAINER_NAME"
+}
+
+nginx_test_command() {
+    printf 'docker exec %s nginx -t\n' "$NGINX_CONTAINER_NAME"
+}
+
+nginx_stop_command() {
+    printf 'docker stop %s\n' "$NGINX_CONTAINER_NAME"
+}
+
+nginx_start_command() {
+    printf 'docker start %s\n' "$NGINX_CONTAINER_NAME"
+}
+
 renew_cron_line() {
     local domain="$1"
     local ssl_dir marker script_path
@@ -238,6 +273,11 @@ renew_cron_line() {
 
 render_standalone_renew_script() {
     local domain="$1"
+    local reload_cmd start_cmd stop_cmd
+
+    reload_cmd="$(nginx_reload_command)"
+    start_cmd="$(nginx_start_command)"
+    stop_cmd="$(nginx_stop_command)"
 
     cat <<EOF
 #!/bin/bash
@@ -248,20 +288,20 @@ rc=0
 was_active=0
 restore_nginx() {
     if [[ \$was_active -eq 1 ]]; then
-        systemctl start nginx >/dev/null 2>&1 || true
+        $start_cmd >/dev/null 2>&1 || true
     fi
 }
 trap 'restore_nginx' INT TERM EXIT
-if systemctl is-active --quiet nginx; then
+if docker inspect -f '{{.State.Running}}' "$NGINX_CONTAINER_NAME" 2>/dev/null | grep -qx true; then
     was_active=1
 fi
-systemctl stop nginx >/dev/null 2>&1 || true
+$stop_cmd >/dev/null 2>&1 || true
 "$ACME_SH" --renew -d $domain --ecc --home "$ACME_HOME"
 rc=\$?
 restore_nginx
 trap - INT TERM EXIT
 if [[ \$rc -eq 0 ]]; then
-    systemctl reload nginx >/dev/null 2>&1 || true
+    $reload_cmd >/dev/null 2>&1 || true
 fi
 exit \$rc
 EOF
@@ -339,6 +379,13 @@ service_needs_web_base_path() {
     case "$1" in
         3x-ui) return 0 ;;
         *) return 1 ;;
+    esac
+}
+
+service_client_max_body_size() {
+    case "$1" in
+        wordpress|halo|typecho) printf '256m\n' ;;
+        *) printf '32m\n' ;;
     esac
 }
 
@@ -857,7 +904,7 @@ render_hugo_compose() {
     cat <<EOF
 services:
   nginx:
-    image: nginx:1.27-alpine
+    image: nginx:latest
     container_name: hugo-site
     restart: unless-stopped
     ports:
@@ -1055,16 +1102,30 @@ nginx_conf_path() {
     printf '%s/app-%s-%s.conf\n' "${NGINX_CONF_DIR%/}" "$service" "$domain"
 }
 
+nginx_default_conf_path() {
+    printf '%s/00-default.conf\n' "${NGINX_CONF_DIR%/}"
+}
+
 nginx_ssl_domain_dir() {
     local domain="$1"
 
     printf '%s/%s\n' "${NGINX_SSL_DIR%/}" "$domain"
 }
 
+nginx_ssl_container_domain_dir() {
+    local domain="$1"
+
+    printf '%s/%s\n' "$NGINX_CONTAINER_SSL_DIR" "$domain"
+}
+
+proxy_compose_file() {
+    printf '%s/docker-compose.yaml\n' "$PROXY_DIR"
+}
+
 validate_proxy_paths() {
     local path
 
-    for path in "$NGINX_CONF_DIR" "$NGINX_SSL_DIR" "$ACME_HOME" "$ACME_SH"; do
+    for path in "$PROXY_DIR" "$NGINX_CONF_DIR" "$NGINX_SSL_DIR" "$NGINX_LOG_DIR" "$ACME_HOME" "$ACME_SH"; do
         if ! is_safe_absolute_path "$path"; then
             printf '代理相关路径不安全：%s\n' "$path" >&2
             return 1
@@ -1080,18 +1141,62 @@ validate_certificate_mode() {
     esac
 }
 
+render_proxy_compose() {
+    cat <<EOF
+services:
+  nginx:
+    image: nginx:latest
+    container_name: $NGINX_CONTAINER_NAME
+    restart: unless-stopped
+    network_mode: host
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    volumes:
+      - ./conf.d:/etc/nginx/conf.d:ro
+      - ./ssl:$NGINX_CONTAINER_SSL_DIR:ro
+      - ./logs:/var/log/nginx
+EOF
+}
+
+ensure_proxy_nginx() {
+    local cmd compose_file
+
+    cmd="$(compose_cmd)" || {
+        printf '未找到 Docker Compose，请先运行 install-docker。\n' >&2
+        return 1
+    }
+    mkdir -p "$PROXY_DIR" "$NGINX_CONF_DIR" "$NGINX_SSL_DIR" "$NGINX_LOG_DIR" || return $?
+    chmod 700 "$NGINX_SSL_DIR" "$NGINX_LOG_DIR" 2>/dev/null || true
+    compose_file="$(proxy_compose_file)"
+    render_proxy_compose > "$compose_file" || return $?
+    chmod 600 "$compose_file" || return $?
+    (cd "$PROXY_DIR" && $cmd up -d)
+}
+
 render_nginx_config() {
     local service="$1"
     local domain="$2"
-    local port upstream ssl_dir map_var
+    local port upstream ssl_dir map_var body_size
 
     port="$(service_port "$service")" || return $?
     upstream="$(service_upstream_name "$service" "$domain")"
-    ssl_dir="$(nginx_ssl_domain_dir "$domain")"
+    ssl_dir="$(nginx_ssl_container_domain_dir "$domain")"
     map_var="${upstream}_connection_upgrade"
+    body_size="$(service_client_max_body_size "$service")"
 
     cat <<EOF
 # 应用服务反向代理：$service
+server_tokens off;
+
 upstream $upstream {
     server 127.0.0.1:$port;
     keepalive 32;
@@ -1106,7 +1211,7 @@ server {
     server_name $domain;
     server_tokens off;
 
-    client_max_body_size 256m;
+    client_max_body_size $body_size;
     send_timeout 600s;
 
     listen [::]:443 ssl;
@@ -1121,13 +1226,20 @@ server {
     ssl_session_cache shared:SSL:10m;
     ssl_session_timeout 10m;
 
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
     location / {
         proxy_pass http://$upstream;
         proxy_redirect off;
         proxy_set_header Host $domain;
+        proxy_set_header X-Forwarded-Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Port 443;
         proxy_set_header X-Original-URI \$request_uri;
 
         proxy_connect_timeout 60s;
@@ -1153,16 +1265,55 @@ server {
 EOF
 }
 
+render_nginx_default_config() {
+    local domain="$1"
+    local ssl_dir
+
+    ssl_dir="$(nginx_ssl_container_domain_dir "$domain")"
+
+    cat <<EOF
+# 默认拒绝未知 Host
+server_tokens off;
+
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    server_tokens off;
+
+    return 444;
+}
+
+server {
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    server_name _;
+    server_tokens off;
+
+    ssl_certificate $ssl_dir/fullchain.cer;
+    ssl_certificate_key $ssl_dir/private.key;
+
+    return 444;
+}
+EOF
+}
+
 render_proxy_dry_run() {
     local service="$1"
     local domain="$2"
-    local conf_path ssl_dir escaped_domain issue_command renew_line script_path
+    local conf_path default_conf_path ssl_dir escaped_domain issue_command renew_line script_path
+    local reload_cmd test_cmd start_cmd stop_cmd
 
     validate_certificate_mode || return $?
     conf_path="$(nginx_conf_path "$service" "$domain")"
+    default_conf_path="$(nginx_default_conf_path)"
     ssl_dir="$(nginx_ssl_domain_dir "$domain")"
     escaped_domain="$(escape_domain_for_grep "$domain")"
     renew_line="$(renew_cron_line "$domain")" || return $?
+    reload_cmd="$(nginx_reload_command)"
+    test_cmd="$(nginx_test_command)"
+    start_cmd="$(nginx_start_command)"
+    stop_cmd="$(nginx_stop_command)"
     if [[ "$CERT_MODE" == "standalone" ]]; then
         issue_command="$ACME_SH --issue --server letsencrypt --standalone -d $domain --keylength ec-256 --home $ACME_HOME"
         script_path="$(standalone_renew_script_path "$domain")"
@@ -1170,8 +1321,12 @@ render_proxy_dry_run() {
         issue_command="$ACME_SH --issue --server letsencrypt --dns dns_cf -d $domain --keylength ec-256 --home $ACME_HOME"
     fi
 
+    printf '[DRY-RUN] 将写入 Docker Nginx Compose：%s\n' "$(proxy_compose_file)"
+    render_proxy_compose
     printf '[DRY-RUN] 将写入 Nginx 配置：%s\n' "$conf_path"
     render_nginx_config "$service" "$domain" || return $?
+    printf '[DRY-RUN] 将写入 Nginx 默认拒绝配置：%s\n' "$default_conf_path"
+    render_nginx_default_config "$domain" || return $?
     cat <<EOF
 [DRY-RUN] 证书模式：$CERT_MODE
 [DRY-RUN] 将使用 acme.sh 签发并安装证书：
@@ -1180,13 +1335,13 @@ mkdir -p $ssl_dir
 chmod 700 $ssl_dir
 EOF
     if [[ "$CERT_MODE" == "standalone" ]]; then
-        printf 'systemctl stop nginx\n'
+        printf '%s\n' "$stop_cmd"
     fi
     cat <<EOF
 $issue_command
 EOF
     if [[ "$CERT_MODE" == "standalone" ]]; then
-        printf 'systemctl start nginx\n'
+        printf '%s\n' "$start_cmd"
         printf '[DRY-RUN] 将写入 standalone 续期脚本：%s\n' "$script_path"
         render_standalone_renew_script "$domain"
     fi
@@ -1194,7 +1349,7 @@ EOF
 $ACME_SH --install-cert -d $domain --ecc --home $ACME_HOME \\
   --fullchain-file $ssl_dir/fullchain.cer \\
   --key-file $ssl_dir/private.key \\
-  --reloadcmd "systemctl reload nginx"
+  --reloadcmd "$reload_cmd"
 chmod 600 $ssl_dir/private.key
 chmod 644 $ssl_dir/fullchain.cer
 [DRY-RUN] 将添加幂等的 root crontab 续期任务：
@@ -1206,8 +1361,8 @@ cat >> /tmp/apps.cron.new <<'CRON_EOF'
 $renew_line
 CRON_EOF
 crontab /tmp/apps.cron.new
-nginx -t
-systemctl reload nginx
+$test_cmd
+$reload_cmd
 EOF
 }
 
@@ -1229,24 +1384,6 @@ require_cloudflare_credentials() {
         return 1
     fi
     return 0
-}
-
-ensure_nginx() {
-    if command -v nginx >/dev/null 2>&1; then
-        return 0
-    fi
-
-    if command -v apt-get >/dev/null 2>&1; then
-        apt-get update || return $?
-        apt-get install -y nginx || return $?
-    elif command -v dnf >/dev/null 2>&1; then
-        dnf install -y nginx || return $?
-    elif command -v yum >/dev/null 2>&1; then
-        yum install -y nginx || return $?
-    else
-        printf '未找到 Nginx，请先手动安装 Nginx。\n' >&2
-        return 1
-    fi
 }
 
 path_mode() {
@@ -1455,12 +1592,17 @@ add_renew_cron() {
 configure_proxy() {
     local service="${1:-}"
     local domain="${2:-}"
-    local conf_path ssl_dir rc
+    local conf_path default_conf_path ssl_dir rc
+    local reload_cmd test_cmd start_cmd stop_cmd
 
     validate_service "$service" || exit $?
     validate_domain "$domain" || exit $?
     validate_proxy_paths || exit $?
     validate_certificate_mode || exit $?
+    reload_cmd="$(nginx_reload_command)"
+    test_cmd="$(nginx_test_command)"
+    start_cmd="$(nginx_start_command)"
+    stop_cmd="$(nginx_stop_command)"
 
     if [[ "$DRY_RUN" == "1" ]]; then
         render_proxy_dry_run "$service" "$domain"
@@ -1471,12 +1613,13 @@ configure_proxy() {
         require_cloudflare_credentials || exit $?
     fi
     need_root
-    ensure_nginx || return $?
     ensure_acme_sh || return $?
+    ensure_proxy_nginx || return $?
 
     conf_path="$(nginx_conf_path "$service" "$domain")"
+    default_conf_path="$(nginx_default_conf_path)"
     ssl_dir="$(nginx_ssl_domain_dir "$domain")"
-    mkdir -p "$NGINX_CONF_DIR" "$ssl_dir" || return $?
+    mkdir -p "$NGINX_CONF_DIR" "$ssl_dir" "$NGINX_LOG_DIR" || return $?
     chmod 700 "$ssl_dir" || return $?
 
     "$ACME_SH" --set-default-ca --server letsencrypt --home "$ACME_HOME" || return $?
@@ -1484,16 +1627,16 @@ configure_proxy() {
         local was_active=0
         restore_standalone_issue_nginx() {
             if [[ $was_active -eq 1 ]]; then
-                systemctl start nginx 2>/dev/null || true
+                $start_cmd 2>/dev/null || true
             fi
         }
-        if systemctl is-active --quiet nginx; then
+        if docker inspect -f '{{.State.Running}}' "$NGINX_CONTAINER_NAME" 2>/dev/null | grep -qx true; then
             was_active=1
         fi
         trap 'restore_standalone_issue_nginx' EXIT
         trap 'restore_standalone_issue_nginx; trap - INT TERM EXIT; exit 130' INT
         trap 'restore_standalone_issue_nginx; trap - INT TERM EXIT; exit 143' TERM
-        systemctl stop nginx 2>/dev/null || true
+        $stop_cmd 2>/dev/null || true
         "$ACME_SH" --issue --server letsencrypt --standalone -d "$domain" --keylength ec-256 --home "$ACME_HOME"
         rc=$?
         restore_standalone_issue_nginx
@@ -1506,7 +1649,7 @@ configure_proxy() {
     "$ACME_SH" --install-cert -d "$domain" --ecc --home "$ACME_HOME" \
         --fullchain-file "$ssl_dir/fullchain.cer" \
         --key-file "$ssl_dir/private.key" \
-        --reloadcmd "systemctl reload nginx" || return $?
+        --reloadcmd "$reload_cmd" || return $?
     chmod 600 "$ssl_dir/private.key" || return $?
     chmod 644 "$ssl_dir/fullchain.cer" || return $?
     if [[ "$CERT_MODE" == "standalone" ]]; then
@@ -1514,10 +1657,11 @@ configure_proxy() {
     fi
 
     render_nginx_config "$service" "$domain" > "$conf_path" || return $?
+    render_nginx_default_config "$domain" > "$default_conf_path" || return $?
     chmod 644 "$conf_path" || return $?
-    nginx -t || return $?
-    systemctl enable --now nginx 2>/dev/null || true
-    systemctl reload nginx || return $?
+    chmod 644 "$default_conf_path" || return $?
+    $test_cmd || return $?
+    $reload_cmd || return $?
     add_renew_cron "$domain" || return $?
     if [[ "$service" == "halo" ]]; then
         update_halo_external_url "$domain" || return $?
@@ -1732,11 +1876,8 @@ check_environment() {
         printf '  Docker Compose：不可用，请先安装 Docker Compose 插件。\n'
         rc=1
     fi
-    if command -v nginx >/dev/null 2>&1; then
-        printf '  Nginx：可用\n'
-    else
-        printf '  Nginx：未安装；只有配置 HTTPS 反向代理时才需要。\n'
-    fi
+    printf '  Docker Nginx 代理目录：%s\n' "$PROXY_DIR"
+    printf '  Nginx 日志目录：%s\n' "$NGINX_LOG_DIR"
     if [[ -x "$ACME_SH" ]]; then
         printf '  acme.sh：可用（%s）\n' "$ACME_SH"
     else

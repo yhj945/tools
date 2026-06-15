@@ -196,6 +196,21 @@ class ScriptTestCase(unittest.TestCase):
         )
         stat.chmod(0o755)
 
+    def write_fake_docker_command(self, bin_dir: Path, body: str | None = None) -> None:
+        if body is None:
+            body = (
+                "if [ \"$1\" = compose ] && [ \"$2\" = version ]; then exit 0; fi\n"
+                "if [ \"$1\" = compose ] && [ \"$2\" = up ]; then exit 0; fi\n"
+                "if [ \"$1\" = exec ]; then exit 0; fi\n"
+                "if [ \"$1\" = start ]; then exit 0; fi\n"
+                "if [ \"$1\" = stop ]; then exit 0; fi\n"
+                "if [ \"$1\" = inspect ]; then echo true; exit 0; fi\n"
+                "exit 0\n"
+            )
+        docker = bin_dir / "docker"
+        docker.write_text(f"#!/bin/sh\n{body}", encoding="utf-8")
+        docker.chmod(0o755)
+
     def write_fake_proxy_commands(self, bin_dir: Path, owner_uid: str = "0", systemctl_body: str = "exit 0\n") -> None:
         (bin_dir / "id").write_text(
             "#!/bin/sh\n"
@@ -205,6 +220,7 @@ class ScriptTestCase(unittest.TestCase):
             encoding="utf-8",
         )
         (bin_dir / "nginx").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        self.write_fake_docker_command(bin_dir)
         (bin_dir / "systemctl").write_text(f"#!/bin/sh\n{systemctl_body}", encoding="utf-8")
         (bin_dir / "crontab").write_text(
             "#!/bin/sh\n"
@@ -213,7 +229,7 @@ class ScriptTestCase(unittest.TestCase):
             encoding="utf-8",
         )
         self.write_fake_root_stat(bin_dir, owner_uid=owner_uid)
-        for script in [bin_dir / "id", bin_dir / "nginx", bin_dir / "systemctl", bin_dir / "crontab"]:
+        for script in [bin_dir / "id", bin_dir / "nginx", bin_dir / "docker", bin_dir / "systemctl", bin_dir / "crontab"]:
             script.chmod(0o755)
 
 
@@ -271,7 +287,7 @@ class InstallAppsTests(ScriptTestCase):
             "APPS_CERT_MODE=standalone",
             "CF_Token",
             "CF_Zone_ID",
-            "/etc/nginx/ssl/<domain>/fullchain.cer",
+            "/opt/apps/proxy/ssl/<domain>/fullchain.cer",
             "crontab",
         ]:
             self.assertIn(expected, readme)
@@ -440,14 +456,23 @@ class InstallAppsTests(ScriptTestCase):
             "return 301 https://blog.example.com$request_uri;",
             f"proxy_pass http://{upstream};",
             "proxy_set_header Host blog.example.com;",
+            "proxy_set_header X-Forwarded-Host $host;",
             "proxy_set_header X-Real-IP $remote_addr;",
             "proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;",
-            "proxy_set_header X-Forwarded-Proto $scheme;",
+            "proxy_set_header X-Forwarded-Proto https;",
+            "proxy_set_header X-Forwarded-Port 443;",
             "proxy_set_header X-Original-URI $request_uri;",
             "proxy_connect_timeout 60s;",
             "proxy_send_timeout 600s;",
             "proxy_read_timeout 3600s;",
             "proxy_buffering off;",
+            "add_header Strict-Transport-Security",
+            "add_header X-Content-Type-Options \"nosniff\" always;",
+            "add_header X-Frame-Options \"SAMEORIGIN\" always;",
+            "add_header Referrer-Policy \"strict-origin-when-cross-origin\" always;",
+            "listen 80 default_server;",
+            "return 444;",
+            "server_tokens off;",
             "/etc/nginx/ssl/blog.example.com/fullchain.cer",
             "/etc/nginx/ssl/blog.example.com/private.key",
         ]:
@@ -507,6 +532,27 @@ class InstallAppsTests(ScriptTestCase):
                 self.assertIn(f"server_name {service}.example.com;", result.stdout)
                 self.assertIn(f"server {backend};", result.stdout)
 
+    def test_services_dry_run_proxy_uses_service_specific_body_size(self):
+        cases = {
+            "wordpress": "client_max_body_size 256m;",
+            "halo": "client_max_body_size 256m;",
+            "typecho": "client_max_body_size 256m;",
+            "hugo": "client_max_body_size 32m;",
+            "komari": "client_max_body_size 32m;",
+            "3x-ui": "client_max_body_size 32m;",
+        }
+        for service, expected in cases.items():
+            with self.subTest(service=service):
+                result = self.run_script(
+                    SERVICES,
+                    "proxy",
+                    service,
+                    f"{service}.example.com",
+                    APPS_DRY_RUN="1",
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(expected, result.stdout)
+
     def test_services_dry_run_proxy_uses_acme_cloudflare_dns01_letsencrypt(self):
         result = self.run_script(SERVICES, "proxy", "wordpress", "blog.example.com", APPS_DRY_RUN="1")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -550,14 +596,26 @@ class InstallAppsTests(ScriptTestCase):
         result = self.run_script(SERVICES, "proxy", "wordpress", "blog.example.com", APPS_DRY_RUN="1")
         self.assertEqual(result.returncode, 0, result.stderr)
         for expected in [
-            "mkdir -p /etc/nginx/ssl/blog.example.com",
-            "chmod 700 /etc/nginx/ssl/blog.example.com",
+            "[DRY-RUN] 将写入 Docker Nginx Compose：/opt/apps/proxy/docker-compose.yaml",
+            "container_name: nginx",
+            "network_mode: host",
+            "read_only: true",
+            "no-new-privileges:true",
+            "cap_drop:",
+            "- ALL",
+            "cap_add:",
+            "- NET_BIND_SERVICE",
+            "- /var/cache/nginx",
+            "- ./logs:/var/log/nginx",
+            "mkdir -p /opt/apps/proxy/ssl/blog.example.com",
+            "chmod 700 /opt/apps/proxy/ssl/blog.example.com",
             "--install-cert -d blog.example.com --ecc --home /root/.acme.sh",
-            "--fullchain-file /etc/nginx/ssl/blog.example.com/fullchain.cer",
-            "--key-file /etc/nginx/ssl/blog.example.com/private.key",
-            "chmod 600 /etc/nginx/ssl/blog.example.com/private.key",
-            "chmod 644 /etc/nginx/ssl/blog.example.com/fullchain.cer",
-            "--reloadcmd \"systemctl reload nginx\"",
+            "--fullchain-file /opt/apps/proxy/ssl/blog.example.com/fullchain.cer",
+            "--key-file /opt/apps/proxy/ssl/blog.example.com/private.key",
+            "chmod 600 /opt/apps/proxy/ssl/blog.example.com/private.key",
+            "chmod 644 /opt/apps/proxy/ssl/blog.example.com/fullchain.cer",
+            "--reloadcmd \"docker exec nginx nginx -s reload\"",
+            "docker exec nginx nginx -t",
         ]:
             self.assertIn(expected, result.stdout)
 
@@ -581,7 +639,7 @@ class InstallAppsTests(ScriptTestCase):
             "APPS_RENEW:blog.example.com:cloudflare",
             "grep -v 'APPS_RENEW:blog\\.example\\.com:'",
             "--renew -d blog.example.com --ecc --home \"/root/.acme.sh\"",
-            ">> /etc/nginx/ssl/blog.example.com/acme-renew.log 2>&1",
+            ">> /opt/apps/proxy/ssl/blog.example.com/acme-renew.log 2>&1",
         ]:
             self.assertIn(expected, result.stdout)
 
@@ -596,10 +654,12 @@ class InstallAppsTests(ScriptTestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("/etc/nginx/ssl/blog.example.com/renew-standalone.sh", result.stdout)
+        self.assertIn("/opt/apps/proxy/ssl/blog.example.com/renew-standalone.sh", result.stdout)
         self.assertIn("timeout 20m", result.stdout)
         self.assertNotIn("10 3 * * * systemctl stop nginx", result.stdout)
         self.assertNotIn("systemctl stop nginx >/dev/null 2>&1;", result.stdout)
+        self.assertIn("docker stop nginx", result.stdout)
+        self.assertIn("docker start nginx", result.stdout)
 
     def test_services_verify_rejects_unknown_service(self):
         result = self.run_script(SERVICES, "verify", "unknown")
@@ -719,6 +779,7 @@ class InstallAppsSecurityRegressionTests(ScriptTestCase):
                 encoding="utf-8",
             )
             (bin_dir / "nginx").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            self.write_fake_docker_command(bin_dir)
             (bin_dir / "systemctl").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             (bin_dir / "crontab").write_text(
                 "#!/bin/sh\n"
@@ -741,7 +802,7 @@ class InstallAppsSecurityRegressionTests(ScriptTestCase):
                 "exit 0\n",
                 encoding="utf-8",
             )
-            for script in [bin_dir / "id", bin_dir / "nginx", bin_dir / "systemctl", bin_dir / "crontab", acme_sh]:
+            for script in [bin_dir / "id", bin_dir / "nginx", bin_dir / "docker", bin_dir / "systemctl", bin_dir / "crontab", acme_sh]:
                 script.chmod(0o755)
 
             result = self.run_script(
@@ -769,7 +830,7 @@ class InstallAppsSecurityRegressionTests(ScriptTestCase):
         self.assertTrue(wrapper_text.startswith("#!/bin/bash\n"))
         self.assertIn("PATH=/usr/sbin:/usr/bin:/sbin:/bin", wrapper_text)
         self.assertIn("restore_nginx", wrapper_text)
-        self.assertIn("systemctl start nginx", wrapper_text)
+        self.assertIn("docker start nginx", wrapper_text)
 
     def test_services_proxy_rejects_cron_path_injection(self):
         result = self.run_script(
@@ -837,6 +898,7 @@ class InstallAppsSecurityRegressionTests(ScriptTestCase):
                 encoding="utf-8",
             )
             (bin_dir / "nginx").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            self.write_fake_docker_command(bin_dir)
             self.write_fake_root_stat(bin_dir)
             acme_sh.write_text(
                 "#!/bin/sh\n"
@@ -892,6 +954,7 @@ class InstallAppsSecurityRegressionTests(ScriptTestCase):
                 encoding="utf-8",
             )
             (bin_dir / "nginx").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            self.write_fake_docker_command(bin_dir)
             self.write_fake_root_stat(bin_dir)
             acme_sh.write_text(
                 "#!/bin/sh\n"
@@ -1045,6 +1108,7 @@ class InstallAppsSecurityRegressionTests(ScriptTestCase):
                 encoding="utf-8",
             )
             (bin_dir / "nginx").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            self.write_fake_docker_command(bin_dir)
             (bin_dir / "systemctl").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             (bin_dir / "crontab").write_text(
                 "#!/bin/sh\n"
@@ -1125,6 +1189,7 @@ class InstallAppsSecurityRegressionTests(ScriptTestCase):
                 encoding="utf-8",
             )
             (bin_dir / "nginx").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            self.write_fake_docker_command(bin_dir)
             (bin_dir / "systemctl").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             (bin_dir / "crontab").write_text(
                 "#!/bin/sh\n"
@@ -1211,6 +1276,7 @@ class InstallAppsSecurityRegressionTests(ScriptTestCase):
                     encoding="utf-8",
                 )
                 (bin_dir / "nginx").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                self.write_fake_docker_command(bin_dir)
                 self.write_fake_root_stat(bin_dir, owner_uid=owner_uid)
                 target.write_text(
                     "#!/bin/sh\n"
@@ -1254,14 +1320,22 @@ class InstallAppsSecurityRegressionTests(ScriptTestCase):
             nginx_ssl_dir = root / "ssl"
             acme_home = root / "acme"
             acme_sh = acme_home / "acme.sh"
-            systemctl_log = root / "systemctl.log"
+            docker_log = root / "docker.log"
             bin_dir.mkdir()
             nginx_conf_dir.mkdir()
             nginx_ssl_dir.mkdir()
             acme_home.mkdir()
-            self.write_fake_proxy_commands(
+            self.write_fake_proxy_commands(bin_dir)
+            self.write_fake_docker_command(
                 bin_dir,
-                systemctl_body=f"printf '%s\\n' \"$*\" >> {shlex.quote(str(systemctl_log))}\nexit 0\n",
+                body=f"printf '%s\\n' \"$*\" >> {shlex.quote(str(docker_log))}\n"
+                "if [ \"$1\" = compose ] && [ \"$2\" = version ]; then exit 0; fi\n"
+                "if [ \"$1\" = compose ] && [ \"$2\" = up ]; then exit 0; fi\n"
+                "if [ \"$1\" = inspect ]; then echo true; exit 0; fi\n"
+                "if [ \"$1\" = stop ]; then exit 0; fi\n"
+                "if [ \"$1\" = start ]; then exit 0; fi\n"
+                "if [ \"$1\" = exec ]; then exit 0; fi\n"
+                "exit 0\n",
             )
             acme_sh.write_text(
                 "#!/bin/sh\n"
@@ -1286,11 +1360,11 @@ class InstallAppsSecurityRegressionTests(ScriptTestCase):
                 APPS_ACME_SH=str(acme_sh),
                 APPS_CERT_MODE="standalone",
             )
-            systemctl_text = systemctl_log.read_text(encoding="utf-8")
+            docker_text = docker_log.read_text(encoding="utf-8")
 
         self.assertEqual(result.returncode, 42, result.stdout + result.stderr)
-        self.assertIn("stop nginx", systemctl_text)
-        self.assertIn("start nginx", systemctl_text)
+        self.assertIn("stop nginx", docker_text)
+        self.assertIn("start nginx", docker_text)
         self.assertNotIn("Configured HTTPS proxy", result.stdout)
 
     def test_services_proxy_updates_existing_halo_external_url(self):
@@ -1324,6 +1398,7 @@ class InstallAppsSecurityRegressionTests(ScriptTestCase):
                 encoding="utf-8",
             )
             (bin_dir / "nginx").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            self.write_fake_docker_command(bin_dir)
             (bin_dir / "systemctl").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             (bin_dir / "crontab").write_text(
                 "#!/bin/sh\n"

@@ -64,6 +64,11 @@ apps/install_apps.sh
 │   ├── .env
 │   ├── docker-compose.yaml
 │   └── data/
+├── proxy/
+│   ├── docker-compose.yaml
+│   ├── conf.d/
+│   ├── ssl/
+│   └── logs/
 └── 3x-ui/
     ├── .env
     ├── docker-compose.yaml
@@ -377,16 +382,22 @@ proxy <service> <domain>
 
 `proxy` 会自动处理：
 
-- 生成 Nginx 反向代理配置，默认写入 `/etc/nginx/conf.d/app-<service>-<domain>.conf`。
+- 生成 Docker Nginx 反向代理 Compose 项目，默认位于 `/opt/apps/proxy/`。
+- 生成 Nginx 反向代理配置，默认写入 `/opt/apps/proxy/conf.d/app-<service>-<domain>.conf`。
 - 将域名转发到对应本机端口：Hugo `8080`、WordPress `8081`、Halo `8082`、Typecho `8083`、Komari `25774`、3X-UI `2053`。
 - 使用 acme.sh + Let's Encrypt 签发证书；默认走 Cloudflare DNS-01，也可通过 `APPS_CERT_MODE=standalone` 使用 standalone。
-- 安装证书到 `/etc/nginx/ssl/<domain>/fullchain.cer` 和 `/etc/nginx/ssl/<domain>/private.key`。
-- 执行 `nginx -t` 并 reload Nginx。
-- 写入 root `crontab` 续期任务，续期日志位于 `/etc/nginx/ssl/<domain>/acme-renew.log`。
+- 安装证书到 `/opt/apps/proxy/ssl/<domain>/fullchain.cer` 和 `/opt/apps/proxy/ssl/<domain>/private.key`，Nginx 容器内路径为 `/etc/nginx/ssl/<domain>/...`。
+- 执行 `docker exec nginx nginx -t` 并 reload Docker Nginx。
+- Nginx 访问日志和错误日志挂载到 `/opt/apps/proxy/logs/`。
+- 写入 root `crontab` 续期任务，续期日志位于 `/opt/apps/proxy/ssl/<domain>/acme-renew.log`。
+- 隐藏 Nginx 版本号，未知 Host 默认返回 `444`。
+- 为 HTTPS 响应添加 HSTS、`X-Content-Type-Options`、`X-Frame-Options` 和 `Referrer-Policy`。
+- Nginx 容器启用只读文件系统、`no-new-privileges`，并只保留绑定低端口所需的 `NET_BIND_SERVICE` capability。
 
 生成的 Nginx 配置包含长连接/流式响应友好的配置：
 
 ```nginx
+client_max_body_size 256m; # WordPress、Halo、Typecho；其它服务默认 32m
 proxy_connect_timeout 60s;
 proxy_send_timeout 600s;
 proxy_read_timeout 3600s;
@@ -397,7 +408,7 @@ proxy_buffering off;
 
 默认方式是 `APPS_CERT_MODE=cloudflare`，也就是 Let's Encrypt + acme.sh + Cloudflare DNS-01。这个方式不需要停止 Nginx，也不依赖 80 端口完成验证，推荐优先使用。
 
-没有 Cloudflare Token 时，可以使用 `APPS_CERT_MODE=standalone`。standalone 会临时停止 Nginx，让 acme.sh 监听 80 端口完成验证，然后再启动并 reload Nginx。使用前请确认域名 A/AAAA 记录已经解析到当前实例，且云防火墙/系统防火墙允许 80 端口入站。
+没有 Cloudflare Token 时，可以使用 `APPS_CERT_MODE=standalone`。standalone 会临时停止 Docker Nginx 容器，让 acme.sh 监听 80 端口完成验证，然后再启动并 reload Nginx。使用前请确认域名 A/AAAA 记录已经解析到当前实例，且云防火墙/系统防火墙允许 80 端口入站。
 
 ### Cloudflare DNS-01 凭据
 
