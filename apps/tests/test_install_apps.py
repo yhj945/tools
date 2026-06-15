@@ -361,6 +361,9 @@ class InstallAppsTests(ScriptTestCase):
         result = self.run_script(SERVICES, "help")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("verify <服务>", result.stdout)
+        self.assertIn("update <服务>", result.stdout)
+        self.assertIn("backup <服务|all>", result.stdout)
+        self.assertIn("backup-cron <服务|all>", result.stdout)
 
     def test_services_help_lists_proxy_domain_usage(self):
         result = self.run_script(SERVICES, "help")
@@ -404,6 +407,23 @@ class InstallAppsTests(ScriptTestCase):
         self.assertIn("ADMIN_PASSWORD: secret", result.stdout)
         self.assertIn("server_name monitor.example.com;", result.stdout)
         self.assertIn("server 127.0.0.1:12577;", result.stdout)
+
+    def test_services_menu_can_configure_backup_cron(self):
+        result = self.run_script_with_input(
+            SERVICES,
+            "6\n/tmp/my-apps\n1\n\n30\n1,3,5\n03:00\nbackup@example.com:/srv/apps\nonedrive:apps-backups\n\n0\n",
+            APPS_DRY_RUN="1",
+            APPS_BACKUP_SCRIPT="/opt/install_apps.sh",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("配置自动备份：all", result.stdout)
+        self.assertIn("[DRY-RUN] 将写入 crontab", result.stdout)
+        self.assertIn('APPS_HOME="/tmp/my-apps"', result.stdout)
+        self.assertIn('APPS_BACKUP_KEEP_DAYS="30"', result.stdout)
+        self.assertIn('APPS_BACKUP_REMOTE="backup@example.com:/srv/apps"', result.stdout)
+        self.assertIn('APPS_BACKUP_RCLONE_REMOTE="onedrive:apps-backups"', result.stdout)
+        self.assertIn('0 3 * * 1,3,5 APPS_HOME="/tmp/my-apps"', result.stdout)
 
     def test_services_dry_run_deploy_with_domain_generates_nginx_reverse_proxy(self):
         result = self.run_script(SERVICES, "deploy", "wordpress", "blog.example.com", APPS_DRY_RUN="1")
@@ -593,7 +613,7 @@ class InstallAppsTests(ScriptTestCase):
             service_dir = Path(temp_dir) / "services" / "wordpress"
             bin_dir.mkdir()
             service_dir.mkdir(parents=True)
-            (service_dir / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+            (service_dir / "docker-compose.yaml").write_text("services: {}\n", encoding="utf-8")
             docker = bin_dir / "docker"
             docker.write_text(
                 "#!/bin/sh\n"
@@ -625,7 +645,7 @@ class InstallAppsTests(ScriptTestCase):
             service_dir = Path(temp_dir) / "services" / "wordpress"
             bin_dir.mkdir()
             service_dir.mkdir(parents=True)
-            (service_dir / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+            (service_dir / "docker-compose.yaml").write_text("services: {}\n", encoding="utf-8")
             docker = bin_dir / "docker"
             docker.write_text(
                 "#!/bin/sh\n"
@@ -1288,7 +1308,7 @@ class InstallAppsSecurityRegressionTests(ScriptTestCase):
             nginx_conf_dir.mkdir()
             nginx_ssl_dir.mkdir()
             acme_home.mkdir()
-            compose_file = service_dir / "docker-compose.yml"
+            compose_file = service_dir / "docker-compose.yaml"
             compose_file.write_text(
                 "services:\n"
                 "  halo:\n"
@@ -1472,6 +1492,262 @@ class InstallAppsSecurityRegressionTests(ScriptTestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("APP_PASSWORD=", env_text)
+        self.assertIn("APP_INSTALLER_VERSION=", env_text)
+
+    def test_services_hugo_does_not_persist_unused_password(self):
+        self.skip_if_running_as_root()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bin_dir = Path(temp_dir) / "bin"
+            home_dir = Path(temp_dir) / "services"
+            service_dir = home_dir / "hugo"
+            bin_dir.mkdir()
+            docker = bin_dir / "docker"
+            docker.write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1\" = compose ] && [ \"$2\" = version ]; then exit 0; fi\n"
+                "if [ \"$1\" = compose ] && [ \"$2\" = up ]; then exit 0; fi\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            docker.chmod(0o755)
+
+            result = self.run_script(
+                SERVICES,
+                "deploy",
+                "hugo",
+                PATH=f"{bin_dir}:{os.environ['PATH']}",
+                APPS_HOME=str(home_dir),
+                APPS_PASSWORD="unused-secret",
+            )
+            env_text = (service_dir / ".env").read_text(encoding="utf-8")
+            compose_text = (service_dir / "docker-compose.yaml").read_text(encoding="utf-8")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("APP_PASSWORD=\n", env_text)
+        self.assertNotIn("unused-secret", env_text + compose_text)
+
+    def test_services_reuses_legacy_oracle_service_password(self):
+        self.skip_if_running_as_root()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bin_dir = Path(temp_dir) / "bin"
+            home_dir = Path(temp_dir) / "services"
+            service_dir = home_dir / "wordpress"
+            bin_dir.mkdir()
+            service_dir.mkdir(parents=True)
+            env_file = service_dir / ".env"
+            env_file.write_text("ORACLE_SERVICE_PASSWORD=legacy-secret\n", encoding="utf-8")
+            docker = bin_dir / "docker"
+            docker.write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1\" = compose ] && [ \"$2\" = version ]; then exit 0; fi\n"
+                "if [ \"$1\" = compose ] && [ \"$2\" = up ]; then exit 0; fi\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            docker.chmod(0o755)
+
+            result = self.run_script(
+                SERVICES,
+                "deploy",
+                "wordpress",
+                PATH=f"{bin_dir}:{os.environ['PATH']}",
+                APPS_HOME=str(home_dir),
+            )
+            env_text = env_file.read_text(encoding="utf-8")
+            compose_text = (service_dir / "docker-compose.yaml").read_text(encoding="utf-8")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("APP_PASSWORD=legacy-secret", env_text)
+        self.assertIn("WORDPRESS_DB_PASSWORD: legacy-secret", compose_text)
+
+    def test_services_redeploy_backs_up_existing_project_files(self):
+        self.skip_if_running_as_root()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bin_dir = Path(temp_dir) / "bin"
+            home_dir = Path(temp_dir) / "services"
+            service_dir = home_dir / "wordpress"
+            bin_dir.mkdir()
+            service_dir.mkdir(parents=True)
+            (service_dir / ".env").write_text("APP_PASSWORD=stable-secret\n", encoding="utf-8")
+            (service_dir / "docker-compose.yaml").write_text("old-compose\n", encoding="utf-8")
+            docker = bin_dir / "docker"
+            docker.write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1\" = compose ] && [ \"$2\" = version ]; then exit 0; fi\n"
+                "if [ \"$1\" = compose ] && [ \"$2\" = up ]; then exit 0; fi\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            docker.chmod(0o755)
+
+            result = self.run_script(
+                SERVICES,
+                "deploy",
+                "wordpress",
+                PATH=f"{bin_dir}:{os.environ['PATH']}",
+                APPS_HOME=str(home_dir),
+            )
+            backup_envs = sorted((service_dir / ".backups").rglob(".env"))
+            backup_composes = sorted((service_dir / ".backups").rglob("docker-compose.yaml"))
+            backup_env_text = backup_envs[-1].read_text(encoding="utf-8") if backup_envs else ""
+            backup_compose_text = backup_composes[-1].read_text(encoding="utf-8") if backup_composes else ""
+            env_text = (service_dir / ".env").read_text(encoding="utf-8")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(backup_envs)
+        self.assertTrue(backup_composes)
+        self.assertEqual(backup_env_text, "APP_PASSWORD=stable-secret\n")
+        self.assertEqual(backup_compose_text, "old-compose\n")
+        self.assertIn("APP_INSTALLER_VERSION=", env_text)
+        self.assertIn("已备份现有配置", result.stdout)
+
+    def test_services_update_pulls_images_and_recreates_containers(self):
+        self.skip_if_running_as_root()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bin_dir = Path(temp_dir) / "bin"
+            home_dir = Path(temp_dir) / "services"
+            service_dir = home_dir / "wordpress"
+            docker_log = Path(temp_dir) / "docker.log"
+            bin_dir.mkdir()
+            service_dir.mkdir(parents=True)
+            (service_dir / "docker-compose.yaml").write_text("services: {}\n", encoding="utf-8")
+            docker = bin_dir / "docker"
+            docker.write_text(
+                "#!/bin/sh\n"
+                f"printf '%s\\n' \"$*\" >> {shlex.quote(str(docker_log))}\n"
+                "if [ \"$1\" = compose ] && [ \"$2\" = version ]; then exit 0; fi\n"
+                "if [ \"$1\" = compose ] && [ \"$2\" = pull ]; then exit 0; fi\n"
+                "if [ \"$1\" = compose ] && [ \"$2\" = up ] && [ \"$3\" = -d ]; then exit 0; fi\n"
+                "exit 1\n",
+                encoding="utf-8",
+            )
+            docker.chmod(0o755)
+
+            result = self.run_script(
+                SERVICES,
+                "update",
+                "wordpress",
+                PATH=f"{bin_dir}:{os.environ['PATH']}",
+                APPS_HOME=str(home_dir),
+            )
+            docker_text = docker_log.read_text(encoding="utf-8")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("compose pull", docker_text)
+        self.assertIn("compose up -d", docker_text)
+
+    def test_services_backup_creates_local_archive(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            home_dir = Path(temp_dir) / "services"
+            service_dir = home_dir / "wordpress"
+            service_dir.mkdir(parents=True)
+            (service_dir / "docker-compose.yaml").write_text("services: {}\n", encoding="utf-8")
+            (service_dir / ".env").write_text("APP_PASSWORD=stable-secret\n", encoding="utf-8")
+            (service_dir / "data").mkdir()
+            (service_dir / "data" / "content.txt").write_text("keep me\n", encoding="utf-8")
+            (service_dir / ".backups").mkdir()
+            (service_dir / ".backups" / "old.txt").write_text("skip me\n", encoding="utf-8")
+
+            result = self.run_script(
+                SERVICES,
+                "backup",
+                "wordpress",
+                APPS_HOME=str(home_dir),
+            )
+            archives = sorted((home_dir / ".backups").glob("wordpress-*.tar.gz"))
+            listing = subprocess.run(
+                ["tar", "-tzf", str(archives[-1])],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(archives)
+        self.assertEqual(listing.returncode, 0, listing.stderr)
+        self.assertIn("wordpress/docker-compose.yaml", listing.stdout)
+        self.assertIn("wordpress/data/content.txt", listing.stdout)
+        self.assertNotIn("wordpress/.backups/old.txt", listing.stdout)
+
+    def test_services_backup_syncs_to_vps_and_rclone_remote(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bin_dir = Path(temp_dir) / "bin"
+            home_dir = Path(temp_dir) / "services"
+            service_dir = home_dir / "hugo"
+            sync_log = Path(temp_dir) / "sync.log"
+            bin_dir.mkdir()
+            service_dir.mkdir(parents=True)
+            (service_dir / "docker-compose.yaml").write_text("services: {}\n", encoding="utf-8")
+            (bin_dir / "rsync").write_text(
+                "#!/bin/sh\n"
+                f"printf 'rsync %s\\n' \"$*\" >> {shlex.quote(str(sync_log))}\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            (bin_dir / "rclone").write_text(
+                "#!/bin/sh\n"
+                f"printf 'rclone %s\\n' \"$*\" >> {shlex.quote(str(sync_log))}\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            for script in [bin_dir / "rsync", bin_dir / "rclone"]:
+                script.chmod(0o755)
+
+            result = self.run_script(
+                SERVICES,
+                "backup",
+                "hugo",
+                PATH=f"{bin_dir}:{os.environ['PATH']}",
+                APPS_HOME=str(home_dir),
+                APPS_BACKUP_REMOTE="backup@example.com:/srv/apps",
+                APPS_BACKUP_RCLONE_REMOTE="onedrive:apps-backups",
+            )
+            sync_text = sync_log.read_text(encoding="utf-8")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("rsync -a --", sync_text)
+        self.assertIn("backup@example.com:/srv/apps/", sync_text)
+        self.assertIn("rclone copy --", sync_text)
+        self.assertIn("onedrive:apps-backups", sync_text)
+
+    def test_services_backup_rejects_unsafe_remote_target(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            home_dir = Path(temp_dir) / "services"
+            service_dir = home_dir / "wordpress"
+            service_dir.mkdir(parents=True)
+            (service_dir / "docker-compose.yaml").write_text("services: {}\n", encoding="utf-8")
+
+            result = self.run_script(
+                SERVICES,
+                "backup",
+                "wordpress",
+                APPS_HOME=str(home_dir),
+                APPS_BACKUP_REMOTE="backup@example.com:/srv/apps;touch/tmp/pwned",
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("APPS_BACKUP_REMOTE 不安全", result.stderr)
+
+    def test_services_backup_cron_dry_run_prints_cron_line(self):
+        result = self.run_script(
+            SERVICES,
+            "backup-cron",
+            "all",
+            APPS_DRY_RUN="1",
+            APPS_HOME="/opt/apps",
+            APPS_BACKUP_DIR="/opt/apps/.backups",
+            APPS_BACKUP_KEEP_DAYS="30",
+            APPS_BACKUP_REMOTE="backup@example.com:/srv/apps",
+            APPS_BACKUP_RCLONE_REMOTE="onedrive:apps-backups",
+            APPS_BACKUP_SCRIPT="/opt/install_apps.sh",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("[DRY-RUN] 将写入 crontab", result.stdout)
+        self.assertIn('bash "/opt/install_apps.sh" backup "all"', result.stdout)
+        self.assertIn('APPS_BACKUP_REMOTE="backup@example.com:/srv/apps"', result.stdout)
 
     def test_services_persists_custom_project_configuration(self):
         self.skip_if_running_as_root()
@@ -1501,7 +1777,7 @@ class InstallAppsSecurityRegressionTests(ScriptTestCase):
                 APPS_PASSWORD="secret-value",
             )
             env_text = (service_dir / ".env").read_text(encoding="utf-8")
-            compose_text = (service_dir / "docker-compose.yml").read_text(encoding="utf-8")
+            compose_text = (service_dir / "docker-compose.yaml").read_text(encoding="utf-8")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         for expected in [

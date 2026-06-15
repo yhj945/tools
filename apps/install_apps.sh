@@ -12,6 +12,11 @@ CERT_MODE="${APPS_CERT_MODE:-cloudflare}"
 SAFE_ROOT_PATH="/usr/sbin:/usr/bin:/sbin:/bin"
 PROJECT_URL="https://github.com/yhj945/tools"
 TOOL_VERSION="v1.0.0"
+BACKUP_DIR="${APPS_BACKUP_DIR:-${BASE_DIR%/}/.backups}"
+BACKUP_KEEP_DAYS="${APPS_BACKUP_KEEP_DAYS:-0}"
+BACKUP_CRON="${APPS_BACKUP_CRON:-30 3 * * *}"
+BACKUP_REMOTE="${APPS_BACKUP_REMOTE:-}"
+BACKUP_RCLONE_REMOTE="${APPS_BACKUP_RCLONE_REMOTE:-}"
 
 if [[ "${EUID:-1}" == "0" ]]; then
     PATH="$SAFE_ROOT_PATH"
@@ -87,6 +92,17 @@ set_base_dir() {
         return 1
     fi
     BASE_DIR="$path"
+    if [[ -z "${APPS_BACKUP_DIR:-}" ]]; then
+        BACKUP_DIR="${BASE_DIR%/}/.backups"
+    fi
+}
+
+validate_backup_dir() {
+    if ! is_safe_absolute_path "$BACKUP_DIR"; then
+        printf 'APPS_BACKUP_DIR 路径不安全：%s\n' "$BACKUP_DIR" >&2
+        return 1
+    fi
+    return 0
 }
 
 validate_domain() {
@@ -305,6 +321,27 @@ service_default_web_base_path() {
     esac
 }
 
+service_needs_password() {
+    case "$1" in
+        wordpress|halo|typecho|komari) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+service_needs_username() {
+    case "$1" in
+        komari) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+service_needs_web_base_path() {
+    case "$1" in
+        3x-ui) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 is_valid_username() {
     local username="$1"
 
@@ -352,14 +389,27 @@ load_project_config() {
 
     APP_PORT_VALUE="${SELECTED_PORT:-${APPS_PORT:-$(env_value "$env_file" APP_PORT)}}"
     APP_DOMAIN_VALUE="${SELECTED_DOMAIN:-${APPS_DOMAIN:-$(env_value "$env_file" APP_DOMAIN)}}"
-    APP_USERNAME_VALUE="${SELECTED_USERNAME:-${APPS_USERNAME:-$(env_value "$env_file" APP_USERNAME)}}"
-    APP_PASSWORD_VALUE="${SELECTED_PASSWORD:-${APPS_PASSWORD:-$(env_value "$env_file" APP_PASSWORD)}}"
-    APP_WEB_BASE_PATH_VALUE="${SELECTED_WEB_BASE_PATH:-${APPS_WEB_BASE_PATH:-$(env_value "$env_file" APP_WEB_BASE_PATH)}}"
+    APP_USERNAME_VALUE=""
+    APP_PASSWORD_VALUE=""
+    APP_WEB_BASE_PATH_VALUE=""
+
+    if service_needs_username "$service"; then
+        APP_USERNAME_VALUE="${SELECTED_USERNAME:-${APPS_USERNAME:-$(env_value "$env_file" APP_USERNAME)}}"
+    fi
+    if service_needs_password "$service"; then
+        APP_PASSWORD_VALUE="${SELECTED_PASSWORD:-${APPS_PASSWORD:-$(env_value "$env_file" APP_PASSWORD)}}"
+        if [[ -z "$APP_PASSWORD_VALUE" ]]; then
+            APP_PASSWORD_VALUE="$(env_value "$env_file" ORACLE_SERVICE_PASSWORD)"
+        fi
+    fi
+    if service_needs_web_base_path "$service"; then
+        APP_WEB_BASE_PATH_VALUE="${SELECTED_WEB_BASE_PATH:-${APPS_WEB_BASE_PATH:-$(env_value "$env_file" APP_WEB_BASE_PATH)}}"
+    fi
 
     [[ -n "$APP_PORT_VALUE" ]] || APP_PORT_VALUE="$default_port"
     [[ -n "$APP_USERNAME_VALUE" ]] || APP_USERNAME_VALUE="$default_username"
     [[ -n "$APP_WEB_BASE_PATH_VALUE" ]] || APP_WEB_BASE_PATH_VALUE="$default_web_base_path"
-    if [[ -z "$APP_PASSWORD_VALUE" ]]; then
+    if service_needs_password "$service" && [[ -z "$APP_PASSWORD_VALUE" ]]; then
         APP_PASSWORD_VALUE="$(random_password)" || return $?
     fi
 
@@ -377,6 +427,7 @@ load_project_config() {
     if [[ "$DRY_RUN" != "1" ]]; then
         mkdir -p "$dir" || return $?
         {
+            printf 'APP_INSTALLER_VERSION=%s\n' "$TOOL_VERSION"
             printf 'APP_NAME=%s\n' "$service"
             printf 'APP_PORT=%s\n' "$APP_PORT_VALUE"
             printf 'APP_DOMAIN=%s\n' "$APP_DOMAIN_VALUE"
@@ -386,6 +437,312 @@ load_project_config() {
         } > "$env_file" || return $?
         chmod 600 "$env_file" || return $?
     fi
+}
+
+backup_project_files() {
+    local dir="$1"
+    local backup_root backup_dir timestamp backed_up=0 file name
+
+    [[ -d "$dir" ]] || return 0
+    timestamp="$(date '+%Y%m%d-%H%M%S')"
+    backup_root="$dir/.backups"
+    backup_dir="$backup_root/$timestamp"
+    for file in "$dir/.env" "$dir/docker-compose.yaml"; do
+        [[ -f "$file" ]] || continue
+        mkdir -p "$backup_dir" || return $?
+        name="$(basename "$file")"
+        cp -a "$file" "$backup_dir/$name" || return $?
+        backed_up=1
+    done
+    if (( backed_up == 1 )); then
+        chmod 700 "$backup_root" "$backup_dir" 2>/dev/null || true
+        log "检测到已有部署，已备份现有配置到 $backup_dir"
+    fi
+}
+
+supported_services() {
+    printf '%s\n' hugo wordpress halo typecho komari 3x-ui
+}
+
+is_valid_keep_days() {
+    [[ "${1:-}" =~ ^[0-9]+$ ]]
+}
+
+validate_backup_keep_days() {
+    if ! is_valid_keep_days "$BACKUP_KEEP_DAYS"; then
+        printf 'APPS_BACKUP_KEEP_DAYS 必须是非负整数：%s\n' "$BACKUP_KEEP_DAYS" >&2
+        return 1
+    fi
+    return 0
+}
+
+validate_backup_cron() {
+    local parts=()
+
+    [[ -n "$BACKUP_CRON" ]] || return 1
+    [[ "$BACKUP_CRON" != *[$'\n\r']* ]] || return 1
+    [[ "$BACKUP_CRON" =~ ^[0-9*/,[:space:]-]+$ ]] || return 1
+    read -r -a parts <<< "$BACKUP_CRON"
+    if (( ${#parts[@]} != 5 )); then
+        printf 'APPS_BACKUP_CRON 必须是 5 段 cron 时间表达式：%s\n' "$BACKUP_CRON" >&2
+        return 1
+    fi
+    return 0
+}
+
+cron_weekday_value() {
+    case "$1" in
+        1|2|3|4|5|6) printf '%s\n' "$1" ;;
+        7) printf '0\n' ;;
+        *) return 1 ;;
+    esac
+}
+
+normalize_backup_weekdays() {
+    local input="$1"
+    local token start end day cron_day result="" seen=","
+    local tokens=()
+
+    input="${input//[[:space:]]/}"
+    [[ -n "$input" ]] || input="*"
+    case "$input" in
+        "*"|"all"|"daily"|"everyday"|"每天")
+            printf '*\n'
+            return 0
+            ;;
+    esac
+
+    IFS=',' read -r -a tokens <<< "$input"
+    for token in "${tokens[@]}"; do
+        if [[ "$token" =~ ^([1-7])-([1-7])$ ]]; then
+            start="${BASH_REMATCH[1]}"
+            end="${BASH_REMATCH[2]}"
+            if (( start > end )); then
+                printf '星期范围无效：%s\n' "$token" >&2
+                return 1
+            fi
+            for (( day = start; day <= end; day++ )); do
+                cron_day="$(cron_weekday_value "$day")" || return $?
+                if [[ "$seen" != *",$cron_day,"* ]]; then
+                    result="${result:+$result,}$cron_day"
+                    seen="$seen$cron_day,"
+                fi
+            done
+        elif [[ "$token" =~ ^[1-7]$ ]]; then
+            cron_day="$(cron_weekday_value "$token")" || return $?
+            if [[ "$seen" != *",$cron_day,"* ]]; then
+                result="${result:+$result,}$cron_day"
+                seen="$seen$cron_day,"
+            fi
+        else
+            printf '星期输入无效：%s\n' "$token" >&2
+            return 1
+        fi
+    done
+
+    [[ -n "$result" ]] || return 1
+    printf '%s\n' "$result"
+}
+
+backup_cron_default_time() {
+    local parts=()
+    local minute hour
+
+    read -r -a parts <<< "$BACKUP_CRON"
+    if (( ${#parts[@]} == 5 )) && [[ "${parts[0]}" =~ ^[0-9]+$ ]] && [[ "${parts[1]}" =~ ^[0-9]+$ ]]; then
+        minute="${parts[0]}"
+        hour="${parts[1]}"
+        printf '%02d:%02d\n' "$hour" "$minute"
+    else
+        printf '03:30\n'
+    fi
+}
+
+time_to_cron_fields() {
+    local input="$1"
+    local hour minute
+
+    if [[ ! "$input" =~ ^([01]?[0-9]|2[0-3]):([0-5][0-9])$ ]]; then
+        printf '备份时间无效：%s\n' "$input" >&2
+        return 1
+    fi
+    hour="${BASH_REMATCH[1]}"
+    minute="${BASH_REMATCH[2]}"
+    printf '%d %d\n' "$minute" "$hour"
+}
+
+is_safe_remote_target() {
+    local target="$1"
+
+    [[ -n "$target" ]] || return 1
+    [[ "$target" != -* ]] || return 1
+    [[ "$target" == *:* ]] || return 1
+    [[ "$target" != *[[:space:]]* ]] || return 1
+    [[ "$target" != *[';&|`$(){}<>\\']* ]] || return 1
+    [[ "$target" =~ ^[A-Za-z0-9._@%+:/-]+$ ]] || return 1
+    return 0
+}
+
+validate_backup_targets() {
+    if [[ -n "$BACKUP_REMOTE" ]] && ! is_safe_remote_target "$BACKUP_REMOTE"; then
+        printf 'APPS_BACKUP_REMOTE 不安全：%s\n' "$BACKUP_REMOTE" >&2
+        return 1
+    fi
+    if [[ -n "$BACKUP_RCLONE_REMOTE" ]] && ! is_safe_remote_target "$BACKUP_RCLONE_REMOTE"; then
+        printf 'APPS_BACKUP_RCLONE_REMOTE 不安全：%s\n' "$BACKUP_RCLONE_REMOTE" >&2
+        return 1
+    fi
+    return 0
+}
+
+backup_archive_path() {
+    local service="$1"
+    local timestamp="$2"
+
+    printf '%s/%s-%s.tar.gz\n' "$BACKUP_DIR" "$service" "$timestamp"
+}
+
+backup_service_archive() {
+    local service="$1"
+    local dir parent name timestamp archive
+
+    validate_service "$service" || return $?
+    validate_backup_dir || return $?
+    validate_backup_keep_days || return $?
+    dir="$(service_dir "$service")" || return $?
+    if [[ ! -d "$dir" || ! -f "$dir/docker-compose.yaml" ]]; then
+        printf '服务尚未部署：%s\n' "$service" >&2
+        return 1
+    fi
+
+    timestamp="$(date '+%Y%m%d-%H%M%S')"
+    archive="$(backup_archive_path "$service" "$timestamp")"
+    if [[ "$DRY_RUN" == "1" ]]; then
+        printf '[DRY-RUN] 将备份 %s 到 %s\n' "$dir" "$archive"
+        return 0
+    fi
+
+    mkdir -p "$BACKUP_DIR" || return $?
+    chmod 700 "$BACKUP_DIR" 2>/dev/null || true
+    parent="$(dirname "$dir")"
+    name="$(basename "$dir")"
+    tar -C "$parent" --exclude "$name/.backups" -czf "$archive" "$name" || return $?
+    chmod 600 "$archive" 2>/dev/null || true
+    log "已备份 $service 到 $archive"
+
+    sync_backup_archive "$archive" || return $?
+    cleanup_old_backups "$service" || return $?
+}
+
+sync_backup_archive() {
+    local archive="$1"
+
+    validate_backup_targets || return $?
+    if [[ -n "$BACKUP_REMOTE" ]]; then
+        if command -v rsync >/dev/null 2>&1; then
+            rsync -a -- "$archive" "$BACKUP_REMOTE/" || return $?
+        elif command -v scp >/dev/null 2>&1; then
+            scp -- "$archive" "$BACKUP_REMOTE/" || return $?
+        else
+            printf '未找到 rsync 或 scp，无法同步到异地 VPS。\n' >&2
+            return 1
+        fi
+        log "已同步备份到 $BACKUP_REMOTE"
+    fi
+    if [[ -n "$BACKUP_RCLONE_REMOTE" ]]; then
+        if ! command -v rclone >/dev/null 2>&1; then
+            printf '未找到 rclone，无法同步到云盘：%s\n' "$BACKUP_RCLONE_REMOTE" >&2
+            return 1
+        fi
+        rclone copy -- "$archive" "$BACKUP_RCLONE_REMOTE" || return $?
+        log "已同步备份到 $BACKUP_RCLONE_REMOTE"
+    fi
+}
+
+cleanup_old_backups() {
+    local service="$1"
+
+    (( BACKUP_KEEP_DAYS > 0 )) || return 0
+    find "$BACKUP_DIR" -maxdepth 1 -type f -name "$service-*.tar.gz" -mtime "+$BACKUP_KEEP_DAYS" -delete
+}
+
+backup_services() {
+    local target="${1:-}"
+    local service rc=0
+
+    [[ -n "$target" ]] || {
+        printf '请指定服务名或 all。\n' >&2
+        return 1
+    }
+    validate_backup_targets || return $?
+    if [[ "$target" == "all" ]]; then
+        for service in $(supported_services); do
+            if [[ -d "$(service_dir "$service" 2>/dev/null)" ]]; then
+                backup_service_archive "$service" || rc=$?
+            fi
+        done
+        return "$rc"
+    fi
+    backup_service_archive "$target"
+}
+
+script_path_for_cron() {
+    local script_path="${APPS_BACKUP_SCRIPT:-$0}"
+
+    [[ "$script_path" == /* ]] || return 1
+    [[ -f "$script_path" ]] || return 1
+    is_safe_absolute_path "$script_path" || return 1
+    printf '%s\n' "$script_path"
+}
+
+backup_cron_marker() {
+    printf 'APPS_BACKUP:%s:%s\n' "$BASE_DIR" "$1"
+}
+
+install_backup_cron() {
+    local target="${1:-}"
+    local script_path marker escaped_marker cron_line temp_cron filtered_cron
+
+    [[ -n "$target" ]] || {
+        printf '请指定服务名或 all。\n' >&2
+        return 1
+    }
+    if [[ "$target" != "all" ]]; then
+        validate_service "$target" || return $?
+    fi
+    validate_base_dir || return $?
+    validate_backup_dir || return $?
+    validate_backup_keep_days || return $?
+    validate_backup_cron || return $?
+    validate_backup_targets || return $?
+    if [[ "$DRY_RUN" == "1" ]]; then
+        script_path="${APPS_BACKUP_SCRIPT:-/path/to/install_apps.sh}"
+    else
+        need_root
+        script_path="$(script_path_for_cron)" || {
+            printf '无法确定可用于 cron 的脚本路径，请通过 APPS_BACKUP_SCRIPT 指定本地脚本绝对路径。\n' >&2
+            return 1
+        }
+    fi
+
+    marker="$(backup_cron_marker "$target")"
+    escaped_marker="$(printf '%s\n' "$marker" | sed 's/[.[\*^$()+?{}|]/\\&/g')"
+    cron_line="$BACKUP_CRON APPS_HOME=\"$BASE_DIR\" APPS_BACKUP_DIR=\"$BACKUP_DIR\" APPS_BACKUP_KEEP_DAYS=\"$BACKUP_KEEP_DAYS\" APPS_BACKUP_REMOTE=\"$BACKUP_REMOTE\" APPS_BACKUP_RCLONE_REMOTE=\"$BACKUP_RCLONE_REMOTE\" bash \"$script_path\" backup \"$target\" # $marker"
+    if [[ "$DRY_RUN" == "1" ]]; then
+        printf '[DRY-RUN] 将写入 crontab：\n%s\n' "$cron_line"
+        return 0
+    fi
+
+    temp_cron="$(mktemp)"
+    filtered_cron="$(mktemp)"
+    crontab -l > "$temp_cron" 2>/dev/null || true
+    grep -v "$escaped_marker" "$temp_cron" > "$filtered_cron" || true
+    printf '%s\n' "$cron_line" >> "$filtered_cron"
+    crontab "$filtered_cron"
+    local rc=$?
+    rm -f "$temp_cron" "$filtered_cron"
+    [[ $rc -eq 0 ]] || return $rc
+    log "已安装自动备份任务：$target"
 }
 
 list_services() {
@@ -427,7 +784,7 @@ service_deploy_state() {
         printf '未知\n'
         return 1
     }
-    if [[ -f "$dir/docker-compose.yml" ]]; then
+    if [[ -f "$dir/docker-compose.yaml" ]]; then
         printf '已部署\n'
     else
         printf '未部署\n'
@@ -501,7 +858,7 @@ render_hugo_compose() {
 services:
   nginx:
     image: nginx:1.27-alpine
-    container_name: app-hugo-site
+    container_name: hugo-site
     restart: unless-stopped
     ports:
       - "127.0.0.1:$port:80"
@@ -518,7 +875,7 @@ render_wordpress_compose() {
 services:
   mariadb:
     image: mariadb:11
-    container_name: app-wordpress-db
+    container_name: wordpress-db
     restart: unless-stopped
     environment:
       MARIADB_DATABASE: wordpress
@@ -529,7 +886,7 @@ services:
       - ./data/mariadb:/var/lib/mysql
   wordpress:
     image: wordpress:6-apache
-    container_name: app-wordpress
+    container_name: wordpress
     restart: unless-stopped
     depends_on:
       - mariadb
@@ -559,7 +916,7 @@ render_halo_compose() {
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: app-halo-db
+    container_name: halo-db
     restart: unless-stopped
     environment:
       POSTGRES_DB: halo
@@ -569,7 +926,7 @@ services:
       - ./data/postgres:/var/lib/postgresql/data
   halo:
     image: halohub/halo:2
-    container_name: app-halo
+    container_name: halo
     restart: unless-stopped
     depends_on:
       - postgres
@@ -594,7 +951,7 @@ render_typecho_compose() {
 services:
   mariadb:
     image: mariadb:11
-    container_name: app-typecho-db
+    container_name: typecho-db
     restart: unless-stopped
     environment:
       MARIADB_DATABASE: typecho
@@ -605,7 +962,7 @@ services:
       - ./data/mariadb:/var/lib/mysql
   typecho:
     image: joyqi/typecho:nightly-php8.2-apache
-    container_name: app-typecho
+    container_name: typecho
     restart: unless-stopped
     depends_on:
       - mariadb
@@ -632,7 +989,7 @@ render_komari_compose() {
 services:
   komari:
     image: ghcr.io/komari-monitor/komari:latest
-    container_name: app-komari
+    container_name: komari
     restart: unless-stopped
     ports:
       - "127.0.0.1:$port:25774"
@@ -652,7 +1009,7 @@ render_3x_ui_compose() {
 services:
   3xui:
     image: ghcr.io/mhsanaei/3x-ui:latest
-    container_name: app-3x-ui
+    container_name: 3x-ui
     restart: unless-stopped
     tty: true
     cap_add:
@@ -1025,7 +1382,7 @@ update_halo_external_url() {
     local dir compose_file cmd
 
     dir="$(service_dir halo)" || return $?
-    compose_file="$dir/docker-compose.yml"
+    compose_file="$dir/docker-compose.yaml"
     if [[ ! -f "$compose_file" ]]; then
         return 0
     fi
@@ -1214,6 +1571,9 @@ deploy_service() {
     fi
     dir="$(service_dir "$service")" || exit $?
     SELECTED_DOMAIN="$domain"
+    if [[ "$DRY_RUN" != "1" ]]; then
+        backup_project_files "$dir" || return $?
+    fi
     load_project_config "$service" "$dir" || exit $?
     SELECTED_PORT="$APP_PORT_VALUE"
 
@@ -1236,8 +1596,8 @@ deploy_service() {
     if [[ "$service" == "hugo" ]]; then
         ensure_hugo_public "$dir" || return $?
     fi
-    render_compose "$service" "$APP_PASSWORD_VALUE" "$APP_DOMAIN_VALUE" "$APP_PORT_VALUE" "$APP_USERNAME_VALUE" "$APP_WEB_BASE_PATH_VALUE" > "$dir/docker-compose.yml" || return $?
-    chmod 600 "$dir/docker-compose.yml" || return $?
+    render_compose "$service" "$APP_PASSWORD_VALUE" "$APP_DOMAIN_VALUE" "$APP_PORT_VALUE" "$APP_USERNAME_VALUE" "$APP_WEB_BASE_PATH_VALUE" > "$dir/docker-compose.yaml" || return $?
+    chmod 600 "$dir/docker-compose.yaml" || return $?
 
     cmd="$(compose_cmd)" || {
         printf '未找到 Docker Compose，请先运行 install-docker。\n' >&2
@@ -1300,6 +1660,10 @@ service_action() {
     case "$action" in
         status) (cd "$dir" && $cmd ps) ;;
         logs) (cd "$dir" && $cmd logs -f) ;;
+        update)
+            need_root_for_base_dir
+            (cd "$dir" && $cmd pull && $cmd up -d)
+            ;;
         stop) (cd "$dir" && $cmd stop) ;;
         uninstall)
             need_root_for_base_dir
@@ -1317,7 +1681,7 @@ verify_service() {
 
     validate_service "$service" || exit $?
     dir="$(service_dir "$service")" || exit $?
-    if [[ ! -d "$dir" || ! -f "$dir/docker-compose.yml" ]]; then
+    if [[ ! -d "$dir" || ! -f "$dir/docker-compose.yaml" ]]; then
         printf '服务尚未部署：%s\n' "$service" >&2
         exit 1
     fi
@@ -1652,13 +2016,166 @@ EOF
     done
 }
 
+prompt_backup_target() {
+    local choice state
+
+    MENU_VALUE=""
+    MENU_CANCELLED=0
+    MENU_RETURNED=0
+    while true; do
+        printf '请选择备份范围：\n'
+        printf '  1) all        - 全部已部署服务\n'
+        state="$(service_deploy_state hugo)"
+        printf '  2) hugo       - Hugo 静态博客（%s）\n' "$state"
+        state="$(service_deploy_state wordpress)"
+        printf '  3) wordpress  - WordPress 站点（%s）\n' "$state"
+        state="$(service_deploy_state halo)"
+        printf '  4) halo       - Halo 博客（%s）\n' "$state"
+        state="$(service_deploy_state typecho)"
+        printf '  5) typecho    - Typecho 博客（%s）\n' "$state"
+        state="$(service_deploy_state komari)"
+        printf '  6) komari     - Komari 监控面板（%s）\n' "$state"
+        state="$(service_deploy_state 3x-ui)"
+        printf '  7) 3x-ui      - 3X-UI 面板（%s）\n' "$state"
+        printf '  0) 返回\n'
+        printf '请输入选项：'
+        IFS= read -r choice || return 1
+        case "$choice" in
+            1|all) MENU_VALUE="all"; return 0 ;;
+            2) MENU_VALUE="hugo"; return 0 ;;
+            3) MENU_VALUE="wordpress"; return 0 ;;
+            4) MENU_VALUE="halo"; return 0 ;;
+            5) MENU_VALUE="typecho"; return 0 ;;
+            6) MENU_VALUE="komari"; return 0 ;;
+            7) MENU_VALUE="3x-ui"; return 0 ;;
+            0|q|quit|exit)
+                MENU_CANCELLED=1
+                MENU_RETURNED=1
+                return 1
+                ;;
+            *)
+                printf '备份范围选项无效：%s\n' "$choice" >&2
+                ;;
+        esac
+    done
+}
+
+prompt_backup_dir() {
+    local input_value
+
+    while true; do
+        printf '备份目录 [默认: %s，输入 0 返回]：' "$BACKUP_DIR"
+        IFS= read -r input_value || return 1
+        case "$input_value" in
+            0|q|quit|exit)
+                MENU_RETURNED=1
+                return 1
+                ;;
+            '')
+                validate_backup_dir && return 0
+                ;;
+            *)
+                BACKUP_DIR="$input_value"
+                validate_backup_dir && return 0
+                ;;
+        esac
+    done
+}
+
+prompt_backup_keep_days() {
+    local input_value
+
+    while true; do
+        printf '本地备份保留天数 [默认: %s，0 表示不自动清理]：' "$BACKUP_KEEP_DAYS"
+        IFS= read -r input_value || return 1
+        [[ -n "$input_value" ]] && BACKUP_KEEP_DAYS="$input_value"
+        validate_backup_keep_days && return 0
+    done
+}
+
+prompt_backup_cron() {
+    local weekday_input time_input dow default_time fields
+
+    while true; do
+        cat <<'EOF'
+自动备份星期：
+  直接回车：每天
+  可输入：1,3,5（周一/周三/周五）
+  可输入：1-5（周一到周五）
+  说明：1=周一，2=周二，3=周三，4=周四，5=周五，6=周六，7=周日
+EOF
+        printf '请选择星期 [每天]：'
+        IFS= read -r weekday_input || return 1
+        dow="$(normalize_backup_weekdays "$weekday_input")" || continue
+
+        default_time="$(backup_cron_default_time)"
+        printf '备份时间 [默认: %s，格式 HH:MM]：' "$default_time"
+        IFS= read -r time_input || return 1
+        [[ -n "$time_input" ]] || time_input="$default_time"
+        fields="$(time_to_cron_fields "$time_input")" || continue
+        BACKUP_CRON="${fields%% *} ${fields##* } * * $dow"
+        validate_backup_cron && return 0
+    done
+}
+
+prompt_backup_remote() {
+    local input_value
+
+    while true; do
+        printf '远程服务器备份位置 [可选，SSH/rsync/scp，示例: user@example.com:/data/app-backups，留空跳过，输入 - 清空]：'
+        IFS= read -r input_value || return 1
+        case "$input_value" in
+            '') validate_backup_targets && return 0 ;;
+            -) BACKUP_REMOTE=""; return 0 ;;
+            *)
+                BACKUP_REMOTE="$input_value"
+                validate_backup_targets && return 0
+                ;;
+        esac
+    done
+}
+
+prompt_backup_rclone_remote() {
+    local input_value
+
+    while true; do
+        printf '云盘备份位置（rclone）[可选，示例: onedrive:apps-backups，留空跳过，输入 - 清空]：'
+        IFS= read -r input_value || return 1
+        case "$input_value" in
+            '') validate_backup_targets && return 0 ;;
+            -) BACKUP_RCLONE_REMOTE=""; return 0 ;;
+            *)
+                BACKUP_RCLONE_REMOTE="$input_value"
+                validate_backup_targets && return 0
+                ;;
+        esac
+    done
+}
+
+configure_backup_menu() {
+    local target
+
+    prompt_base_dir || return 0
+    prompt_backup_target || return 0
+    target="$MENU_VALUE"
+    prompt_backup_dir || return 0
+    prompt_backup_keep_days || return 0
+    prompt_backup_cron || return 0
+    prompt_backup_remote || return 0
+    prompt_backup_rclone_remote || return 0
+    show_section "配置自动备份：$target"
+    ( install_backup_cron "$target" )
+}
+
 service_action_from_menu_choice() {
     case "$1" in
         1) printf 'status\n' ;;
         2) printf 'logs\n' ;;
         3) printf 'verify\n' ;;
-        4) printf 'stop\n' ;;
-        5) printf 'uninstall\n' ;;
+        4) printf 'update\n' ;;
+        5) printf 'backup\n' ;;
+        6) printf 'stop\n' ;;
+        7) printf 'uninstall\n' ;;
         *) return 1 ;;
     esac
 }
@@ -1668,6 +2185,8 @@ service_action_label() {
         status) printf '查看状态\n' ;;
         logs) printf '跟随日志\n' ;;
         verify) printf '验证健康\n' ;;
+        update) printf '更新镜像并重建\n' ;;
+        backup) printf '备份服务数据\n' ;;
         stop) printf '停止服务\n' ;;
         uninstall) printf '卸载服务\n' ;;
         *) printf '%s\n' "$1" ;;
@@ -1691,8 +2210,10 @@ manage_service_menu() {
   1) 查看状态
   2) 跟随日志
   3) 验证健康
-  4) 停止服务
-  5) 卸载服务
+  4) 更新镜像并重建
+  5) 备份服务数据
+  6) 停止服务
+  7) 卸载服务
   0) 返回主菜单
 EOF
         printf '请输入选项：'
@@ -1705,11 +2226,13 @@ EOF
             '')
                 continue
                 ;;
-            1|2|3|4|5)
+            1|2|3|4|5|6|7)
                 action="$(service_action_from_menu_choice "$choice")" || return 1
                 show_section "$(service_display_name "$service") - $(service_action_label "$action")"
                 if [[ "$action" == "verify" ]]; then
                     ( verify_service "$service" )
+                elif [[ "$action" == "backup" ]]; then
+                    ( backup_services "$service" )
                 else
                     ( service_action "$action" "$service" )
                 fi
@@ -1755,7 +2278,7 @@ run_menu_action() {
                 prompt_komari_credentials || return 0
             elif [[ "$service" == "3x-ui" ]]; then
                 prompt_3x_ui_web_base_path || return 0
-                printf '3X-UI Docker 镜像会在首次启动时生成用户名和密码；请启动后通过容器日志或 x-ui 菜单查看/修改。\n'
+                printf '3X-UI Docker 镜像默认账号和密码均为 admin；请首次登录后立即修改。\n'
             fi
             if [[ -n "$domain" ]]; then
                 prompt_certificate_mode || return 0
@@ -1775,8 +2298,11 @@ run_menu_action() {
             show_section "配置 HTTPS 反向代理：$service -> $domain"
             ( configure_proxy "$service" "$domain" )
             ;;
-        6) show_section "安装 Docker"; ( install_docker ) ;;
-        7) show_section "检查脚本"; ( check_script ) ;;
+        6)
+            configure_backup_menu
+            ;;
+        7) show_section "安装 Docker"; ( install_docker ) ;;
+        8) show_section "检查脚本"; ( check_script ) ;;
         h|help) show_section "帮助"; usage ;;
         *) printf '菜单选项无效：%s\n' "$choice" >&2; return 1 ;;
     esac
@@ -1796,8 +2322,9 @@ interactive_menu() {
   3) 部署/更新服务
   4) 管理已部署服务
   5) 配置 HTTPS 反向代理
-  6) 安装 Docker
-  7) 检查脚本
+  6) 配置自动备份
+  7) 安装 Docker
+  8) 检查脚本
   h) 帮助
 
   0) 退出
@@ -1846,6 +2373,9 @@ usage() {
   proxy <服务> <域名>     配置 Nginx 反向代理、Let's Encrypt 证书和续期
   status <服务>           查看 Docker Compose 状态
   logs <服务>             跟随查看 Docker Compose 日志
+  update <服务>           拉取最新镜像并重新创建容器
+  backup <服务|all>       备份服务目录，可选同步到异地 VPS 或 rclone remote
+  backup-cron <服务|all>  写入自动备份 crontab
   stop <服务>             停止服务
   uninstall <服务>        停止并删除服务项目
   verify <服务>           验证 Docker Compose 服务健康状态
@@ -1856,6 +2386,12 @@ usage() {
 证书模式：
   APPS_CERT_MODE=cloudflare   Let's Encrypt + acme.sh + Cloudflare Token（推荐）
   APPS_CERT_MODE=standalone   Let's Encrypt standalone
+
+备份：
+  APPS_BACKUP_DIR=/opt/apps/.backups
+  APPS_BACKUP_KEEP_DAYS=30
+  APPS_BACKUP_REMOTE=user@example.com:/data/apps-backups
+  APPS_BACKUP_RCLONE_REMOTE=onedrive:apps-backups
 EOF
 }
 
@@ -1865,7 +2401,9 @@ case "${1:-menu}" in
     install-docker) install_docker ;;
     deploy) deploy_service "${2:-}" "${3:-}" ;;
     proxy) configure_proxy "${2:-}" "${3:-}" ;;
-    status|logs|stop|uninstall) service_action "$1" "${2:-}" ;;
+    status|logs|update|stop|uninstall) service_action "$1" "${2:-}" ;;
+    backup) backup_services "${2:-}" ;;
+    backup-cron) install_backup_cron "${2:-}" ;;
     verify) verify_service "${2:-}" ;;
     check) check_script ;;
     env) check_environment ;;
