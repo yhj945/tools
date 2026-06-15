@@ -1,14 +1,16 @@
 #!/bin/bash
 set -u
 
-BASE_DIR="${ORACLE_SERVICES_HOME:-/opt/oracle-services}"
-DRY_RUN="${ORACLE_SERVICES_DRY_RUN:-0}"
-NGINX_CONF_DIR="${ORACLE_SERVICES_NGINX_CONF_DIR:-/etc/nginx/conf.d}"
-NGINX_SSL_DIR="${ORACLE_SERVICES_NGINX_SSL_DIR:-/etc/nginx/ssl}"
-ACME_HOME="${ORACLE_SERVICES_ACME_HOME:-/root/.acme.sh}"
-ACME_SH="${ORACLE_SERVICES_ACME_SH:-$ACME_HOME/acme.sh}"
-CERT_MODE="${ORACLE_SERVICES_CERT_MODE:-cloudflare}"
+DEFAULT_BASE_DIR="/opt/apps"
+BASE_DIR="${APPS_HOME:-$DEFAULT_BASE_DIR}"
+DRY_RUN="${APPS_DRY_RUN:-0}"
+NGINX_CONF_DIR="${APPS_NGINX_CONF_DIR:-/etc/nginx/conf.d}"
+NGINX_SSL_DIR="${APPS_NGINX_SSL_DIR:-/etc/nginx/ssl}"
+ACME_HOME="${APPS_ACME_HOME:-/root/.acme.sh}"
+ACME_SH="${APPS_ACME_SH:-$ACME_HOME/acme.sh}"
+CERT_MODE="${APPS_CERT_MODE:-cloudflare}"
 SAFE_ROOT_PATH="/usr/sbin:/usr/bin:/sbin:/bin"
+PROJECT_URL="https://github.com/yhj945/tools"
 
 if [[ "${EUID:-1}" == "0" ]]; then
     PATH="$SAFE_ROOT_PATH"
@@ -51,7 +53,7 @@ need_root() {
 
 validate_service() {
     case "${1:-}" in
-        hugo|wordpress|halo|typecho) return 0 ;;
+        hugo|wordpress|halo|typecho|komari|3x-ui) return 0 ;;
         *) printf '未知服务：%s\n' "${1:-}" >&2; return 1 ;;
     esac
 }
@@ -70,10 +72,20 @@ is_safe_absolute_path() {
 
 validate_base_dir() {
     if ! is_safe_absolute_path "$BASE_DIR"; then
-        printf 'ORACLE_SERVICES_HOME 路径不安全：%s\n' "$BASE_DIR" >&2
+        printf 'APPS_HOME 路径不安全：%s\n' "$BASE_DIR" >&2
         return 1
     fi
     return 0
+}
+
+set_base_dir() {
+    local path="$1"
+
+    if ! is_safe_absolute_path "$path"; then
+        printf '部署目录不安全：%s\n' "$path" >&2
+        return 1
+    fi
+    BASE_DIR="$path"
 }
 
 validate_domain() {
@@ -94,26 +106,86 @@ validate_domain() {
     return 0
 }
 
-service_port() {
+service_default_port() {
     case "$1" in
         hugo) printf '8080\n' ;;
         wordpress) printf '8081\n' ;;
         halo) printf '8082\n' ;;
         typecho) printf '8083\n' ;;
+        komari) printf '25774\n' ;;
+        3x-ui) printf '2053\n' ;;
         *) validate_service "$1" || return $? ;;
     esac
+}
+
+is_valid_port() {
+    local port="$1"
+
+    [[ "$port" =~ ^[0-9]+$ ]] || return 1
+    (( port >= 1 && port <= 65535 ))
+}
+
+validate_port() {
+    if ! is_valid_port "${1:-}"; then
+        printf '端口无效：%s\n' "${1:-}" >&2
+        return 1
+    fi
+    return 0
+}
+
+env_value() {
+    local env_file="$1"
+    local key="$2"
+
+    if [[ -f "$env_file" ]]; then
+        awk -F= -v key="$key" '$1 == key {print substr($0, index($0, "=") + 1); exit}' "$env_file"
+    fi
+}
+
+service_port() {
+    local service="$1"
+    local dir env_port default_port
+
+    validate_service "$service" || return $?
+    default_port="$(service_default_port "$service")" || return $?
+    if [[ -n "${SELECTED_PORT:-}" ]]; then
+        printf '%s\n' "$SELECTED_PORT"
+        return 0
+    fi
+    if [[ -n "${APPS_PORT:-}" ]]; then
+        validate_port "$APPS_PORT" || return $?
+        printf '%s\n' "$APPS_PORT"
+        return 0
+    fi
+    dir="$(service_dir "$service")" || return $?
+    env_port="$(env_value "$dir/.env" APP_PORT)"
+    if [[ -n "$env_port" ]]; then
+        validate_port "$env_port" || return $?
+        printf '%s\n' "$env_port"
+    else
+        printf '%s\n' "$default_port"
+    fi
+}
+
+service_access() {
+    local service="$1"
+    local port
+
+    port="$(service_port "$service" 2>/dev/null || service_default_port "$service")"
+    printf '127.0.0.1:%s\n' "$port"
 }
 
 service_upstream_name() {
     local service="$1"
     local domain="$2"
-    local safe_domain hash
+    local safe_service safe_domain hash
 
+    safe_service="${service//-/_}"
     safe_domain="${domain//./_}"
     safe_domain="${safe_domain//-/_}"
     hash="$(printf '%s' "$service:$domain" | cksum)"
     hash="${hash%% *}"
-    printf 'oracle_%s_%s_%s_backend\n' "$service" "$safe_domain" "$hash" | tr '[:upper:]' '[:lower:]'
+    printf 'app_%s_%s_%s_backend\n' "$safe_service" "$safe_domain" "$hash" | tr '[:upper:]' '[:lower:]'
 }
 
 escape_domain_for_grep() {
@@ -121,7 +193,7 @@ escape_domain_for_grep() {
 }
 
 renew_marker() {
-    printf 'ORACLE_APP_SERVICE_RENEW:%s:%s\n' "$1" "$CERT_MODE"
+    printf 'APPS_RENEW:%s:%s\n' "$1" "$CERT_MODE"
 }
 
 standalone_renew_script_path() {
@@ -195,7 +267,7 @@ service_dir() {
 }
 
 compose_cmd() {
-    if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    if command -v docker >/dev/null 2>&1 && docker compose version </dev/null >/dev/null 2>&1; then
         printf '%s\n' "docker compose"
         return 0
     fi
@@ -218,46 +290,120 @@ random_password() {
     fi
 }
 
-load_or_create_password() {
+service_default_username() {
+    case "$1" in
+        komari) printf 'admin\n' ;;
+        *) printf '\n' ;;
+    esac
+}
+
+service_default_web_base_path() {
+    case "$1" in
+        3x-ui) printf '/\n' ;;
+        *) printf '\n' ;;
+    esac
+}
+
+is_valid_username() {
+    local username="$1"
+
+    [[ -n "$username" ]] || return 1
+    [[ ${#username} -le 64 ]] || return 1
+    [[ "$username" =~ ^[A-Za-z0-9._@-]+$ ]]
+}
+
+validate_username() {
+    if ! is_valid_username "${1:-}"; then
+        printf '用户名无效：%s\n' "${1:-}" >&2
+        return 1
+    fi
+    return 0
+}
+
+is_valid_web_base_path() {
+    local path="$1"
+
+    [[ -n "$path" ]] || return 1
+    [[ "$path" == /* ]] || return 1
+    [[ "$path" != *".."* ]] || return 1
+    [[ "$path" != *[[:space:]]* ]] || return 1
+    [[ "$path" =~ ^/[A-Za-z0-9._~/-]*$ ]] || return 1
+    return 0
+}
+
+validate_web_base_path() {
+    if ! is_valid_web_base_path "${1:-}"; then
+        printf '访问路径无效：%s\n' "${1:-}" >&2
+        return 1
+    fi
+    return 0
+}
+
+load_project_config() {
     local service="$1"
     local dir="$2"
     local env_file="$dir/.env"
-    local password=""
+    local default_port default_username default_web_base_path
 
-    if [[ -f "$env_file" ]]; then
-        password="$(awk -F= '/^ORACLE_SERVICE_PASSWORD=/{print substr($0, index($0, "=") + 1); exit}' "$env_file")"
+    default_port="$(service_default_port "$service")" || return $?
+    default_username="$(service_default_username "$service")"
+    default_web_base_path="$(service_default_web_base_path "$service")"
+
+    APP_PORT_VALUE="${SELECTED_PORT:-${APPS_PORT:-$(env_value "$env_file" APP_PORT)}}"
+    APP_DOMAIN_VALUE="${SELECTED_DOMAIN:-${APPS_DOMAIN:-$(env_value "$env_file" APP_DOMAIN)}}"
+    APP_USERNAME_VALUE="${SELECTED_USERNAME:-${APPS_USERNAME:-$(env_value "$env_file" APP_USERNAME)}}"
+    APP_PASSWORD_VALUE="${SELECTED_PASSWORD:-${APPS_PASSWORD:-$(env_value "$env_file" APP_PASSWORD)}}"
+    APP_WEB_BASE_PATH_VALUE="${SELECTED_WEB_BASE_PATH:-${APPS_WEB_BASE_PATH:-$(env_value "$env_file" APP_WEB_BASE_PATH)}}"
+
+    [[ -n "$APP_PORT_VALUE" ]] || APP_PORT_VALUE="$default_port"
+    [[ -n "$APP_USERNAME_VALUE" ]] || APP_USERNAME_VALUE="$default_username"
+    [[ -n "$APP_WEB_BASE_PATH_VALUE" ]] || APP_WEB_BASE_PATH_VALUE="$default_web_base_path"
+    if [[ -z "$APP_PASSWORD_VALUE" ]]; then
+        APP_PASSWORD_VALUE="$(random_password)" || return $?
     fi
-    if [[ -z "$password" ]]; then
-        password="$(random_password)"
+
+    validate_port "$APP_PORT_VALUE" || return $?
+    if [[ -n "$APP_DOMAIN_VALUE" ]]; then
+        validate_domain "$APP_DOMAIN_VALUE" || return $?
+    fi
+    if [[ -n "$APP_USERNAME_VALUE" ]]; then
+        validate_username "$APP_USERNAME_VALUE" || return $?
+    fi
+    if [[ -n "$APP_WEB_BASE_PATH_VALUE" ]]; then
+        validate_web_base_path "$APP_WEB_BASE_PATH_VALUE" || return $?
     fi
 
     if [[ "$DRY_RUN" != "1" ]]; then
         mkdir -p "$dir" || return $?
-        if [[ ! -f "$env_file" ]]; then
-            printf 'ORACLE_SERVICE=%s\nORACLE_SERVICE_PASSWORD=%s\n' "$service" "$password" > "$env_file" || return $?
-            chmod 600 "$env_file" || return $?
-        elif ! grep -q '^ORACLE_SERVICE_PASSWORD=' "$env_file"; then
-            printf 'ORACLE_SERVICE_PASSWORD=%s\n' "$password" >> "$env_file" || return $?
-            chmod 600 "$env_file" || return $?
-        fi
+        {
+            printf 'APP_NAME=%s\n' "$service"
+            printf 'APP_PORT=%s\n' "$APP_PORT_VALUE"
+            printf 'APP_DOMAIN=%s\n' "$APP_DOMAIN_VALUE"
+            printf 'APP_USERNAME=%s\n' "$APP_USERNAME_VALUE"
+            printf 'APP_PASSWORD=%s\n' "$APP_PASSWORD_VALUE"
+            printf 'APP_WEB_BASE_PATH=%s\n' "$APP_WEB_BASE_PATH_VALUE"
+        } > "$env_file" || return $?
+        chmod 600 "$env_file" || return $?
     fi
-
-    printf '%s\n' "$password"
 }
 
 list_services() {
     printf '支持的服务：\n\n'
     printf '  1) %-10s %-18s %-24s %-16s %s\n' \
-        "hugo" "静态博客/页面" "nginx:alpine" "127.0.0.1:8080" "$(service_deploy_state hugo)"
+        "hugo" "静态博客/页面" "nginx:alpine" "$(service_access hugo)" "$(service_deploy_state hugo)"
     printf '  2) %-10s %-18s %-24s %-16s %s\n' \
-        "wordpress" "WordPress 站点" "WordPress + MariaDB" "127.0.0.1:8081" "$(service_deploy_state wordpress)"
+        "wordpress" "WordPress 站点" "WordPress + MariaDB" "$(service_access wordpress)" "$(service_deploy_state wordpress)"
     printf '  3) %-10s %-18s %-24s %-16s %s\n' \
-        "halo" "Halo 博客" "Halo + PostgreSQL" "127.0.0.1:8082" "$(service_deploy_state halo)"
+        "halo" "Halo 博客" "Halo + PostgreSQL" "$(service_access halo)" "$(service_deploy_state halo)"
     printf '  4) %-10s %-18s %-24s %-16s %s\n' \
-        "typecho" "Typecho 博客" "Typecho + MariaDB" "127.0.0.1:8083" "$(service_deploy_state typecho)"
+        "typecho" "Typecho 博客" "Typecho + MariaDB" "$(service_access typecho)" "$(service_deploy_state typecho)"
+    printf '  5) %-10s %-18s %-24s %-16s %s\n' \
+        "komari" "服务器监控面板" "Komari" "$(service_access komari)" "$(service_deploy_state komari)"
+    printf '  6) %-10s %-18s %-24s %-16s %s\n' \
+        "3x-ui" "Xray 管理面板" "3X-UI" "$(service_access 3x-ui)" "$(service_deploy_state 3x-ui)"
     printf '\n'
     printf '默认部署目录：%s\n' "$BASE_DIR"
-    printf '可通过 ORACLE_SERVICES_HOME 修改部署目录。\n'
+    printf '可通过 APPS_HOME 修改部署目录。\n'
 }
 
 service_display_name() {
@@ -266,6 +412,8 @@ service_display_name() {
         wordpress) printf 'WordPress\n' ;;
         halo) printf 'Halo\n' ;;
         typecho) printf 'Typecho\n' ;;
+        komari) printf 'Komari 监控面板\n' ;;
+        3x-ui) printf '3X-UI 面板\n' ;;
         *) printf '%s\n' "$1" ;;
     esac
 }
@@ -286,14 +434,22 @@ service_deploy_state() {
 }
 
 show_header() {
-    printf '%s\n' "╔═══════════════════════════════════════════════════════════╗"
-    printf '%s\n' "║                 Oracle 应用服务部署工具                  ║"
-    printf '%s\n' "╚═══════════════════════════════════════════════════════════╝"
+    printf '\n'
+    printf '%b\n' "${CYAN}[ 应用安装工具 ]${NC}"
+    printf '%b\n' "${CYAN}GitHub: ${PROJECT_URL}${NC}"
+    printf '\n'
+}
+
+show_section() {
+    printf '\n'
+    printf '%b\n' "${BOLD}========================================${NC}"
+    printf '%b\n' "${BOLD}$1${NC}"
+    printf '%b\n' "${BOLD}========================================${NC}"
 }
 
 show_menu_status() {
     local compose_status docker_status service state
-    local services=(hugo wordpress halo typecho)
+    local services=(hugo wordpress halo typecho komari 3x-ui)
 
     if command -v docker >/dev/null 2>&1; then
         docker_status="${GREEN}✓${NC} Docker 已安装"
@@ -326,14 +482,16 @@ show_menu_status() {
 }
 
 render_hugo_compose() {
-    cat <<'EOF'
+    local port="$1"
+
+    cat <<EOF
 services:
   nginx:
     image: nginx:1.27-alpine
-    container_name: oracle-hugo-site
+    container_name: app-hugo-site
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8080:80"
+      - "127.0.0.1:$port:80"
     volumes:
       - ./public:/usr/share/nginx/html:ro
 EOF
@@ -341,12 +499,13 @@ EOF
 
 render_wordpress_compose() {
     local password="$1"
+    local port="$2"
 
     cat <<EOF
 services:
   mariadb:
     image: mariadb:11
-    container_name: oracle-wordpress-db
+    container_name: app-wordpress-db
     restart: unless-stopped
     environment:
       MARIADB_DATABASE: wordpress
@@ -357,12 +516,12 @@ services:
       - ./data/mariadb:/var/lib/mysql
   wordpress:
     image: wordpress:6-apache
-    container_name: oracle-wordpress
+    container_name: app-wordpress
     restart: unless-stopped
     depends_on:
       - mariadb
     ports:
-      - "127.0.0.1:8081:80"
+      - "127.0.0.1:$port:80"
     environment:
       WORDPRESS_DB_HOST: mariadb:3306
       WORDPRESS_DB_USER: wordpress
@@ -375,8 +534,9 @@ EOF
 
 render_halo_compose() {
     local password="$1"
-    local domain="${2:-}"
-    local external_url="http://localhost:8082/"
+    local port="$2"
+    local domain="${3:-}"
+    local external_url="http://localhost:$port/"
 
     if [[ -n "$domain" ]]; then
         external_url="https://$domain/"
@@ -386,7 +546,7 @@ render_halo_compose() {
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: oracle-halo-db
+    container_name: app-halo-db
     restart: unless-stopped
     environment:
       POSTGRES_DB: halo
@@ -396,12 +556,12 @@ services:
       - ./data/postgres:/var/lib/postgresql/data
   halo:
     image: halohub/halo:2
-    container_name: oracle-halo
+    container_name: app-halo
     restart: unless-stopped
     depends_on:
       - postgres
     ports:
-      - "127.0.0.1:8082:8090"
+      - "127.0.0.1:$port:8090"
     environment:
       SPRING_R2DBC_URL: r2dbc:pool:postgresql://postgres:5432/halo
       SPRING_R2DBC_USERNAME: halo
@@ -415,12 +575,13 @@ EOF
 
 render_typecho_compose() {
     local password="$1"
+    local port="$2"
 
     cat <<EOF
 services:
   mariadb:
     image: mariadb:11
-    container_name: oracle-typecho-db
+    container_name: app-typecho-db
     restart: unless-stopped
     environment:
       MARIADB_DATABASE: typecho
@@ -431,12 +592,12 @@ services:
       - ./data/mariadb:/var/lib/mysql
   typecho:
     image: joyqi/typecho:nightly-php8.2-apache
-    container_name: oracle-typecho
+    container_name: app-typecho
     restart: unless-stopped
     depends_on:
       - mariadb
     ports:
-      - "127.0.0.1:8083:80"
+      - "127.0.0.1:$port:80"
     environment:
       TYPECHO_DB_ADAPTER: Pdo_Mysql
       TYPECHO_DB_HOST: mariadb
@@ -449,17 +610,71 @@ services:
 EOF
 }
 
+render_komari_compose() {
+    local password="$1"
+    local port="$2"
+    local username="$3"
+
+    cat <<EOF
+services:
+  komari:
+    image: ghcr.io/komari-monitor/komari:latest
+    container_name: app-komari
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:$port:25774"
+    environment:
+      ADMIN_USERNAME: $username
+      ADMIN_PASSWORD: $password
+    volumes:
+      - ./data:/app/data
+EOF
+}
+
+render_3x_ui_compose() {
+    local port="$1"
+    local web_base_path="$2"
+
+    cat <<EOF
+services:
+  3xui:
+    image: ghcr.io/mhsanaei/3x-ui:latest
+    container_name: app-3x-ui
+    restart: unless-stopped
+    tty: true
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    ports:
+      - "127.0.0.1:$port:$port"
+    environment:
+      XRAY_VMESS_AEAD_FORCED: "false"
+      XUI_ENABLE_FAIL2BAN: "true"
+      XUI_PORT: "$port"
+      XUI_INIT_WEB_BASE_PATH: "$web_base_path"
+    volumes:
+      - ./db:/etc/x-ui
+      - ./cert:/root/cert
+EOF
+}
+
 render_compose() {
     local service="$1"
     local password="${2:-change-me}"
     local domain="${3:-}"
+    local port="${4:-}"
+    local username="${5:-}"
+    local web_base_path="${6:-}"
 
     validate_service "$service" || return $?
+    [[ -n "$port" ]] || port="$(service_default_port "$service")"
     case "$service" in
-        hugo) render_hugo_compose ;;
-        wordpress) render_wordpress_compose "$password" ;;
-        halo) render_halo_compose "$password" "$domain" ;;
-        typecho) render_typecho_compose "$password" ;;
+        hugo) render_hugo_compose "$port" ;;
+        wordpress) render_wordpress_compose "$password" "$port" ;;
+        halo) render_halo_compose "$password" "$port" "$domain" ;;
+        typecho) render_typecho_compose "$password" "$port" ;;
+        komari) render_komari_compose "$password" "$port" "${username:-admin}" ;;
+        3x-ui) render_3x_ui_compose "$port" "${web_base_path:-/}" ;;
     esac
 }
 
@@ -467,7 +682,7 @@ nginx_conf_path() {
     local service="$1"
     local domain="$2"
 
-    printf '%s/oracle-%s-%s.conf\n' "${NGINX_CONF_DIR%/}" "$service" "$domain"
+    printf '%s/app-%s-%s.conf\n' "${NGINX_CONF_DIR%/}" "$service" "$domain"
 }
 
 nginx_ssl_domain_dir() {
@@ -506,7 +721,7 @@ render_nginx_config() {
     map_var="${upstream}_connection_upgrade"
 
     cat <<EOF
-# Oracle 应用服务反向代理：$service
+# 应用服务反向代理：$service
 upstream $upstream {
     server 127.0.0.1:$port;
     keepalive 32;
@@ -613,14 +828,14 @@ $ACME_SH --install-cert -d $domain --ecc --home $ACME_HOME \\
 chmod 600 $ssl_dir/private.key
 chmod 644 $ssl_dir/fullchain.cer
 [DRY-RUN] 将添加幂等的 root crontab 续期任务：
-(crontab -l 2>/dev/null || true) > /tmp/oracle-services.cron
-cp -a /tmp/oracle-services.cron /tmp/oracle-services.cron.new
-grep -v 'ORACLE_APP_SERVICE_RENEW:$escaped_domain:' /tmp/oracle-services.cron.new > /tmp/oracle-services.cron.filtered
-mv /tmp/oracle-services.cron.filtered /tmp/oracle-services.cron.new
-cat >> /tmp/oracle-services.cron.new <<'CRON_EOF'
+(crontab -l 2>/dev/null || true) > /tmp/apps.cron
+cp -a /tmp/apps.cron /tmp/apps.cron.new
+grep -v 'APPS_RENEW:$escaped_domain:' /tmp/apps.cron.new > /tmp/apps.cron.filtered
+mv /tmp/apps.cron.filtered /tmp/apps.cron.new
+cat >> /tmp/apps.cron.new <<'CRON_EOF'
 $renew_line
 CRON_EOF
-crontab /tmp/oracle-services.cron.new
+crontab /tmp/apps.cron.new
 nginx -t
 systemctl reload nginx
 EOF
@@ -852,7 +1067,7 @@ add_renew_cron() {
         rm -f "$cron_file" "$new_cron" "$filtered_cron"
         return 1
     }
-    grep -v "ORACLE_APP_SERVICE_RENEW:$escaped_domain:" "$new_cron" > "$filtered_cron" || true
+    grep -v "APPS_RENEW:$escaped_domain:" "$new_cron" > "$filtered_cron" || true
     mv "$filtered_cron" "$new_cron" || {
         rm -f "$cron_file" "$new_cron" "$filtered_cron"
         return 1
@@ -951,11 +1166,11 @@ ensure_hugo_public() {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Oracle Hugo 站点</title>
+  <title>Hugo 站点</title>
 </head>
 <body>
   <main>
-    <h1>Oracle Hugo 站点</h1>
+    <h1>Hugo 站点</h1>
     <p>请将 Hugo 生成的 public 目录内容替换到这里。</p>
   </main>
 </body>
@@ -967,9 +1182,15 @@ EOF
 deploy_service() {
     local service="${1:-}"
     local domain="${2:-}"
-    local dir password compose_password cmd
+    local dir compose_password cmd
 
     validate_service "$service" || exit $?
+    if [[ -n "${APPS_PORT:-}" ]]; then
+        validate_port "$APPS_PORT" || exit $?
+    fi
+    if [[ -z "$domain" && -n "${APPS_DOMAIN:-}" ]]; then
+        domain="$APPS_DOMAIN"
+    fi
     if [[ -n "$domain" ]]; then
         validate_domain "$domain" || exit $?
         validate_proxy_paths || exit $?
@@ -979,15 +1200,17 @@ deploy_service() {
         fi
     fi
     dir="$(service_dir "$service")" || exit $?
-    password="$(load_or_create_password "$service" "$dir")" || exit $?
+    SELECTED_DOMAIN="$domain"
+    load_project_config "$service" "$dir" || exit $?
+    SELECTED_PORT="$APP_PORT_VALUE"
 
     if [[ "$DRY_RUN" == "1" ]]; then
-        compose_password="$password"
-        if [[ -f "$dir/.env" ]] && grep -q '^ORACLE_SERVICE_PASSWORD=' "$dir/.env"; then
+        compose_password="$APP_PASSWORD_VALUE"
+        if [[ -f "$dir/.env" ]] && grep -q '^APP_PASSWORD=' "$dir/.env"; then
             compose_password="<redacted-existing-password>"
         fi
         printf '[DRY-RUN] 将在 %s 部署 %s\n' "$dir" "$service"
-        render_compose "$service" "$compose_password" "$domain" || return $?
+        render_compose "$service" "$compose_password" "$APP_DOMAIN_VALUE" "$APP_PORT_VALUE" "$APP_USERNAME_VALUE" "$APP_WEB_BASE_PATH_VALUE" || return $?
         if [[ -n "$domain" ]]; then
             validate_proxy_paths || return $?
             render_proxy_dry_run "$service" "$domain" || return $?
@@ -1000,7 +1223,7 @@ deploy_service() {
     if [[ "$service" == "hugo" ]]; then
         ensure_hugo_public "$dir" || return $?
     fi
-    render_compose "$service" "$password" "$domain" > "$dir/docker-compose.yml" || return $?
+    render_compose "$service" "$APP_PASSWORD_VALUE" "$APP_DOMAIN_VALUE" "$APP_PORT_VALUE" "$APP_USERNAME_VALUE" "$APP_WEB_BASE_PATH_VALUE" > "$dir/docker-compose.yml" || return $?
     chmod 600 "$dir/docker-compose.yml" || return $?
 
     cmd="$(compose_cmd)" || {
@@ -1113,7 +1336,7 @@ verify_service() {
 
 check_script() {
     validate_certificate_mode || return $?
-    printf '%s\n' "oracle_app_services.sh 检查通过"
+    printf '%s\n' "install_apps.sh 检查通过"
 }
 
 check_environment() {
@@ -1150,9 +1373,19 @@ check_environment() {
 MENU_VALUE=""
 MENU_CANCELLED=0
 MENU_RETURNED=0
+SELECTED_PORT=""
+SELECTED_DOMAIN=""
+SELECTED_USERNAME=""
+SELECTED_PASSWORD=""
+SELECTED_WEB_BASE_PATH=""
+APP_PORT_VALUE=""
+APP_DOMAIN_VALUE=""
+APP_USERNAME_VALUE=""
+APP_PASSWORD_VALUE=""
+APP_WEB_BASE_PATH_VALUE=""
 
 pause_menu() {
-    printf '按回车键返回菜单...'
+    printf '\n按回车键继续...'
     IFS= read -r _ || true
     printf '\n'
 }
@@ -1173,14 +1406,20 @@ prompt_service_name() {
         printf '  3) halo       - Halo 博客（%s）\n' "$state"
         state="$(service_deploy_state typecho)"
         printf '  4) typecho    - Typecho 博客（%s）\n' "$state"
+        state="$(service_deploy_state komari)"
+        printf '  5) komari     - Komari 监控面板（%s）\n' "$state"
+        state="$(service_deploy_state 3x-ui)"
+        printf '  6) 3x-ui      - 3X-UI 面板（%s）\n' "$state"
         printf '  0) 返回\n'
-        printf '请输入选项 [1-4]：'
+        printf '请输入选项 [1-6]：'
         IFS= read -r choice || return 1
         case "$choice" in
             1) MENU_VALUE="hugo"; return 0 ;;
             2) MENU_VALUE="wordpress"; return 0 ;;
             3) MENU_VALUE="halo"; return 0 ;;
             4) MENU_VALUE="typecho"; return 0 ;;
+            5) MENU_VALUE="komari"; return 0 ;;
+            6) MENU_VALUE="3x-ui"; return 0 ;;
             0|q|quit|exit)
                 MENU_CANCELLED=1
                 MENU_RETURNED=1
@@ -1242,6 +1481,135 @@ prompt_optional_domain() {
     done
 }
 
+prompt_service_port() {
+    local service="$1"
+    local default_port input_value
+
+    MENU_VALUE=""
+    MENU_CANCELLED=0
+    MENU_RETURNED=0
+    default_port="$(service_port "$service" 2>/dev/null || service_default_port "$service")"
+    while true; do
+        printf 'Web 访问端口 [默认: %s，输入 0 返回]：' "$default_port"
+        IFS= read -r input_value || return 1
+        case "$input_value" in
+            0|q|quit|exit)
+                MENU_CANCELLED=1
+                MENU_RETURNED=1
+                return 1
+                ;;
+            '')
+                MENU_VALUE="$default_port"
+                return 0
+                ;;
+            *)
+                if validate_port "$input_value"; then
+                    MENU_VALUE="$input_value"
+                    return 0
+                fi
+                ;;
+        esac
+    done
+}
+
+prompt_komari_credentials() {
+    local default_username input_value password_value
+
+    MENU_CANCELLED=0
+    MENU_RETURNED=0
+    default_username="${APPS_USERNAME:-admin}"
+    while true; do
+        printf 'Komari 管理员用户名 [默认: %s，输入 0 返回]：' "$default_username"
+        IFS= read -r input_value || return 1
+        case "$input_value" in
+            0|q|quit|exit)
+                MENU_CANCELLED=1
+                MENU_RETURNED=1
+                return 1
+                ;;
+            '')
+                SELECTED_USERNAME="$default_username"
+                break
+                ;;
+            *)
+                if validate_username "$input_value"; then
+                    SELECTED_USERNAME="$input_value"
+                    break
+                fi
+                ;;
+        esac
+    done
+
+    printf 'Komari 管理员密码 [默认: 自动生成，输入 0 返回]：'
+    IFS= read -r password_value || return 1
+    case "$password_value" in
+        0|q|quit|exit)
+            MENU_CANCELLED=1
+            MENU_RETURNED=1
+            return 1
+            ;;
+        '')
+            SELECTED_PASSWORD=""
+            ;;
+        *)
+            SELECTED_PASSWORD="$password_value"
+            ;;
+    esac
+}
+
+prompt_3x_ui_web_base_path() {
+    local default_path input_value
+
+    MENU_CANCELLED=0
+    MENU_RETURNED=0
+    default_path="${APPS_WEB_BASE_PATH:-/}"
+    while true; do
+        printf '3X-UI 面板访问路径 [默认: %s，输入 0 返回]：' "$default_path"
+        IFS= read -r input_value || return 1
+        case "$input_value" in
+            0|q|quit|exit)
+                MENU_CANCELLED=1
+                MENU_RETURNED=1
+                return 1
+                ;;
+            '')
+                SELECTED_WEB_BASE_PATH="$default_path"
+                return 0
+                ;;
+            *)
+                if validate_web_base_path "$input_value"; then
+                    SELECTED_WEB_BASE_PATH="$input_value"
+                    return 0
+                fi
+                ;;
+        esac
+    done
+}
+
+prompt_base_dir() {
+    local input_value
+
+    MENU_CANCELLED=0
+    MENU_RETURNED=0
+    while true; do
+        printf '部署目录 [默认: %s，输入 0 返回]：' "$BASE_DIR"
+        IFS= read -r input_value || return 1
+        case "$input_value" in
+            0|q|quit|exit)
+                MENU_CANCELLED=1
+                MENU_RETURNED=1
+                return 1
+                ;;
+            '')
+                validate_base_dir && return 0
+                ;;
+            *)
+                set_base_dir "$input_value" && return 0
+                ;;
+        esac
+    done
+}
+
 prompt_certificate_mode() {
     local choice
 
@@ -1282,6 +1650,17 @@ service_action_from_menu_choice() {
     esac
 }
 
+service_action_label() {
+    case "$1" in
+        status) printf '查看状态\n' ;;
+        logs) printf '跟随日志\n' ;;
+        verify) printf '验证健康\n' ;;
+        stop) printf '停止服务\n' ;;
+        uninstall) printf '卸载服务\n' ;;
+        *) printf '%s\n' "$1" ;;
+    esac
+}
+
 manage_service_menu() {
     local service action choice rc
 
@@ -1306,12 +1685,16 @@ EOF
         printf '请输入选项：'
         IFS= read -r choice || return 0
         case "$choice" in
-            0|q|quit|exit) return 0 ;;
+            0|q|quit|exit)
+                printf '%b\n' "${GREEN}感谢使用，再见！${NC}"
+                return 0
+                ;;
             '')
                 continue
                 ;;
             1|2|3|4|5)
                 action="$(service_action_from_menu_choice "$choice")" || return 1
+                show_section "$(service_display_name "$service") - $(service_action_label "$action")"
                 if [[ "$action" == "verify" ]]; then
                     ( verify_service "$service" )
                 else
@@ -1338,17 +1721,33 @@ run_menu_action() {
     local service domain
 
     MENU_RETURNED=0
+    SELECTED_PORT=""
+    SELECTED_DOMAIN=""
+    SELECTED_USERNAME=""
+    SELECTED_PASSWORD=""
+    SELECTED_WEB_BASE_PATH=""
     case "$choice" in
-        1) ( check_environment ) ;;
-        2) list_services ;;
+        1) show_section "检查运行环境"; ( check_environment ) ;;
+        2) show_section "支持的服务"; list_services ;;
         3)
+            prompt_base_dir || return 0
             prompt_service_name || return 0
             service="$MENU_VALUE"
+            prompt_service_port "$service" || return 0
+            SELECTED_PORT="$MENU_VALUE"
             prompt_optional_domain || return 0
             domain="$MENU_VALUE"
+            SELECTED_DOMAIN="$domain"
+            if [[ "$service" == "komari" ]]; then
+                prompt_komari_credentials || return 0
+            elif [[ "$service" == "3x-ui" ]]; then
+                prompt_3x_ui_web_base_path || return 0
+                printf '3X-UI Docker 镜像会在首次启动时生成用户名和密码；请启动后通过容器日志或 x-ui 菜单查看/修改。\n'
+            fi
             if [[ -n "$domain" ]]; then
                 prompt_certificate_mode || return 0
             fi
+            show_section "部署/更新服务：$service"
             ( deploy_service "$service" "$domain" )
             ;;
         4)
@@ -1360,11 +1759,12 @@ run_menu_action() {
             prompt_required_domain || return 0
             domain="$MENU_VALUE"
             prompt_certificate_mode || return 0
+            show_section "配置 HTTPS 反向代理：$service -> $domain"
             ( configure_proxy "$service" "$domain" )
             ;;
-        6) ( install_docker ) ;;
-        7) ( check_script ) ;;
-        h|help) usage ;;
+        6) show_section "安装 Docker"; ( install_docker ) ;;
+        7) show_section "检查脚本"; ( check_script ) ;;
+        h|help) show_section "帮助"; usage ;;
         *) printf '菜单选项无效：%s\n' "$choice" >&2; return 1 ;;
     esac
 }
@@ -1386,12 +1786,20 @@ interactive_menu() {
   6) 安装 Docker
   7) 检查脚本
   h) 帮助
+
   0) 退出
 EOF
-        printf '\n请输入选项：'
-        IFS= read -r choice || return 0
+        printf '\n========================================\n'
+        printf '请输入选项：'
+        if ! IFS= read -r choice; then
+            printf '%b\n' "${GREEN}感谢使用，再见！${NC}"
+            return 0
+        fi
         case "$choice" in
-            0|q|quit|exit) return 0 ;;
+            0|q|quit|exit)
+                printf '%b\n' "${GREEN}感谢使用，再见！${NC}"
+                return 0
+                ;;
             '')
                 continue
                 ;;
@@ -1414,14 +1822,14 @@ EOF
 
 usage() {
     cat <<'EOF'
-用法：oracle_app_services.sh [命令] [服务] [域名]
+用法：install_apps.sh [命令] [服务] [域名]
 
 不带参数运行会打开交互式菜单。
 
 命令：
   list                    列出支持的服务
   install-docker          安装 Docker 和 Docker Compose 插件
-  deploy <服务> [域名]    部署 hugo、wordpress、halo 或 typecho；可选配置 HTTPS 反向代理
+  deploy <服务> [域名]    部署 hugo、wordpress、halo、typecho、komari 或 3x-ui；可选配置 HTTPS 反向代理
   proxy <服务> <域名>     配置 Nginx 反向代理、Let's Encrypt 证书和续期
   status <服务>           查看 Docker Compose 状态
   logs <服务>             跟随查看 Docker Compose 日志
@@ -1433,8 +1841,8 @@ usage() {
   help                    显示帮助
 
 证书模式：
-  ORACLE_SERVICES_CERT_MODE=cloudflare   Let's Encrypt + acme.sh + Cloudflare Token（推荐）
-  ORACLE_SERVICES_CERT_MODE=standalone   Let's Encrypt standalone
+  APPS_CERT_MODE=cloudflare   Let's Encrypt + acme.sh + Cloudflare Token（推荐）
+  APPS_CERT_MODE=standalone   Let's Encrypt standalone
 EOF
 }
 

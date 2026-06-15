@@ -1,6 +1,6 @@
-# Oracle 实用服务部署脚本
+# 应用安装脚本
 
-`oracle_app_services.sh` 用于在 Oracle 实例上快速部署一些真实可用的轻量服务，让实例产生更有意义的资源使用，而不是单纯空转。
+`install_apps.sh` 用于在 Linux 服务器上快速部署一些常见轻量应用，并为每个应用生成独立的 Docker Compose 项目目录。
 
 当前支持：
 
@@ -8,6 +8,8 @@
 - WordPress
 - Halo
 - Typecho
+- Komari
+- 3X-UI
 
 > 说明：脚本会生成 Docker Compose 项目。真实部署需要服务器已安装 Docker 和 Docker Compose 插件，或先使用脚本的 `install-docker` 命令安装。
 
@@ -16,9 +18,10 @@
 - 一键列出支持的服务。
 - 可辅助安装 Docker 和 Docker Compose 插件。
 - 为每个服务生成独立 Docker Compose 项目目录。
-- 自动生成并持久化数据库密码。
-- 重复部署时复用 `.env` 中的 `ORACLE_SERVICE_PASSWORD`，避免数据库密码轮换导致应用无法连接。
-- 服务名使用白名单，仅允许 `hugo`、`wordpress`、`halo`、`typecho`。
+- 安装过程中可自定义 Web 端口和域名。
+- 自动生成并持久化数据库密码或初始密码。
+- 重复部署时复用 `.env` 中的 `APP_PORT`、`APP_DOMAIN`、`APP_USERNAME`、`APP_PASSWORD` 和 `APP_WEB_BASE_PATH`。
+- 服务名使用白名单，仅允许 `hugo`、`wordpress`、`halo`、`typecho`、`komari`、`3x-ui`。
 - 支持 `verify <service>` 检查已部署 Docker Compose 服务是否运行健康。
 - 交互式菜单：无参数运行脚本即可选择安装 Docker、部署服务、配置域名、查看状态和验证健康。
 - 支持为服务配置域名、Nginx 反向代理、Let's Encrypt 证书和自动续期。
@@ -30,13 +33,13 @@
 源码文件：
 
 ```text
-oracle/oracle_app_services.sh
+apps/install_apps.sh
 ```
 
 默认部署目录：
 
 ```text
-/opt/oracle-services/
+/opt/apps/
 ├── hugo/
 │   ├── .env
 │   ├── docker-compose.yml
@@ -49,16 +52,36 @@ oracle/oracle_app_services.sh
 │   ├── .env
 │   ├── docker-compose.yml
 │   └── data/
-└── typecho/
+├── typecho/
+│   ├── .env
+│   ├── docker-compose.yml
+│   └── data/
+├── komari/
+│   ├── .env
+│   ├── docker-compose.yml
+│   └── data/
+└── 3x-ui/
     ├── .env
     ├── docker-compose.yml
-    └── data/
+    ├── db/
+    └── cert/
 ```
 
-可通过环境变量修改部署目录：
+可通过环境变量修改部署目录；交互式部署时也会询问部署目录，默认使用 `/opt/apps`：
 
 ```bash
-ORACLE_SERVICES_HOME=/data/oracle-services bash oracle_app_services.sh deploy wordpress
+APPS_HOME=/data/apps bash install_apps.sh deploy wordpress
+```
+
+每个服务目录下的 `.env` 会保存本次部署配置：
+
+```text
+APP_NAME=wordpress
+APP_PORT=8081
+APP_DOMAIN=blog.example.com
+APP_USERNAME=
+APP_PASSWORD=...
+APP_WEB_BASE_PATH=
 ```
 
 ## 命令参考
@@ -84,27 +107,27 @@ ORACLE_SERVICES_HOME=/data/oracle-services bash oracle_app_services.sh deploy wo
 
 ```bash
 # 打开交互式菜单
-bash <(curl -sL https://raw.githubusercontent.com/yhj945/tools/main/oracle/oracle_app_services.sh)
+bash <(curl -sL https://raw.githubusercontent.com/yhj945/tools/main/apps/install_apps.sh)
 
 # 自动化兼容：仍可直接指定命令
-bash <(curl -sL https://raw.githubusercontent.com/yhj945/tools/main/oracle/oracle_app_services.sh) help
-bash <(curl -sL https://raw.githubusercontent.com/yhj945/tools/main/oracle/oracle_app_services.sh) list
-ORACLE_SERVICES_DRY_RUN=1 bash <(curl -sL https://raw.githubusercontent.com/yhj945/tools/main/oracle/oracle_app_services.sh) deploy hugo
+bash <(curl -sL https://raw.githubusercontent.com/yhj945/tools/main/apps/install_apps.sh) help
+bash <(curl -sL https://raw.githubusercontent.com/yhj945/tools/main/apps/install_apps.sh) list
+APPS_DRY_RUN=1 bash <(curl -sL https://raw.githubusercontent.com/yhj945/tools/main/apps/install_apps.sh) deploy hugo
 ```
 
 如果当前 shell 不支持进程替换，可使用管道方式：
 
 ```bash
-curl -sL https://raw.githubusercontent.com/yhj945/tools/main/oracle/oracle_app_services.sh | bash -s -- list
+curl -sL https://raw.githubusercontent.com/yhj945/tools/main/apps/install_apps.sh | bash -s -- list
 ```
 
 安装 Docker 或部署服务通常需要 root 权限。技术上可以一键远程执行，但更建议先下载、审阅脚本，再执行：
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/yhj945/tools/main/oracle/oracle_app_services.sh
-less oracle_app_services.sh
-sudo bash oracle_app_services.sh install-docker
-sudo bash oracle_app_services.sh deploy hugo
+curl -fsSLO https://raw.githubusercontent.com/yhj945/tools/main/apps/install_apps.sh
+less install_apps.sh
+sudo bash install_apps.sh install-docker
+sudo bash install_apps.sh deploy hugo
 ```
 
 ### 交互式菜单
@@ -112,21 +135,38 @@ sudo bash oracle_app_services.sh deploy hugo
 推荐直接运行脚本进入交互式菜单：
 
 ```bash
-bash oracle_app_services.sh
+bash install_apps.sh
 ```
 
-菜单中可以选择列出服务、安装 Docker、部署服务、配置 HTTPS 反向代理、查看状态、查看日志、停止、卸载和验证服务。需要配置域名时，菜单会继续询问服务名、域名和证书方式。
+菜单中可以选择检查环境、列出服务、部署服务、管理已部署服务、配置 HTTPS 反向代理、安装 Docker 和检查脚本。部署服务时会依次询问部署目录、服务、Web 端口和域名；直接回车使用默认值。Komari 会继续询问初始管理员账号和密码，3X-UI 会询问面板访问路径。需要配置域名时，菜单会继续询问证书方式。
+
+命令行自动化可使用这些环境变量：
+
+```bash
+APPS_HOME=/data/apps \
+APPS_PORT=18081 \
+APPS_DOMAIN=blog.example.com \
+APPS_DRY_RUN=1 \
+bash install_apps.sh deploy wordpress
+
+APPS_USERNAME=ops APPS_PASSWORD='change-me-now' \
+APPS_PORT=12577 \
+bash install_apps.sh deploy komari monitor.example.com
+
+APPS_PORT=12053 APPS_WEB_BASE_PATH=/panel \
+bash install_apps.sh deploy 3x-ui panel.example.com
+```
 
 ### 查看支持的服务
 
 ```bash
-bash oracle_app_services.sh list
+bash install_apps.sh list
 ```
 
 ### 安装 Docker
 
 ```bash
-sudo bash oracle_app_services.sh install-docker
+sudo bash install_apps.sh install-docker
 ```
 
 支持的包管理器：
@@ -140,7 +180,7 @@ sudo bash oracle_app_services.sh install-docker
 ### 部署 Hugo 静态博客
 
 ```bash
-sudo bash oracle_app_services.sh deploy hugo
+sudo bash install_apps.sh deploy hugo
 ```
 
 默认访问端口：
@@ -152,7 +192,7 @@ http://127.0.0.1:8080/
 脚本会创建一个默认静态页面：
 
 ```text
-/opt/oracle-services/hugo/public/index.html
+/opt/apps/hugo/public/index.html
 ```
 
 你可以将 Hugo 生成的 `public/` 目录内容替换到该路径。
@@ -160,7 +200,7 @@ http://127.0.0.1:8080/
 ### 部署 WordPress
 
 ```bash
-sudo bash oracle_app_services.sh deploy wordpress
+sudo bash install_apps.sh deploy wordpress
 ```
 
 默认访问端口：
@@ -177,13 +217,13 @@ http://127.0.0.1:8081/
 数据目录：
 
 ```text
-/opt/oracle-services/wordpress/data/
+/opt/apps/wordpress/data/
 ```
 
 ### 部署 Halo
 
 ```bash
-sudo bash oracle_app_services.sh deploy halo
+sudo bash install_apps.sh deploy halo
 ```
 
 默认访问端口：
@@ -200,13 +240,13 @@ http://127.0.0.1:8082/
 数据目录：
 
 ```text
-/opt/oracle-services/halo/data/
+/opt/apps/halo/data/
 ```
 
 ### 部署 Typecho
 
 ```bash
-sudo bash oracle_app_services.sh deploy typecho
+sudo bash install_apps.sh deploy typecho
 ```
 
 默认访问端口：
@@ -223,8 +263,60 @@ http://127.0.0.1:8083/
 数据目录：
 
 ```text
-/opt/oracle-services/typecho/data/
+/opt/apps/typecho/data/
 ```
+
+### 部署 Komari 监控面板
+
+```bash
+sudo bash install_apps.sh deploy komari
+```
+
+默认访问端口：
+
+```text
+http://127.0.0.1:25774/
+```
+
+组件：
+
+- `ghcr.io/komari-monitor/komari:latest`
+
+数据目录：
+
+```text
+/opt/apps/komari/data/
+```
+
+脚本会通过环境变量设置初始管理员账号；交互式安装时可自定义：
+
+- 用户名：`admin`
+- 密码：保存在 `/opt/apps/komari/.env` 的 `APP_PASSWORD`
+
+### 部署 3X-UI 面板
+
+```bash
+sudo bash install_apps.sh deploy 3x-ui
+```
+
+默认访问端口：
+
+```text
+http://127.0.0.1:2053/
+```
+
+组件：
+
+- `ghcr.io/mhsanaei/3x-ui:latest`
+
+数据目录：
+
+```text
+/opt/apps/3x-ui/db/
+/opt/apps/3x-ui/cert/
+```
+
+3X-UI 使用官方支持的 `XUI_PORT` 和 `XUI_INIT_WEB_BASE_PATH` 配置面板端口和访问路径，并默认只把面板端口绑定到 `127.0.0.1`，建议配合脚本的 HTTPS 反向代理使用。Docker 镜像首次启动会生成登录凭据；请启动后通过容器日志或 3X-UI 管理命令查看/修改用户名和密码。
 
 ## 服务端口
 
@@ -234,17 +326,19 @@ http://127.0.0.1:8083/
 | WordPress | `127.0.0.1:8081` | WordPress Web |
 | Halo | `127.0.0.1:8082` | Halo Web，容器内端口 `8090` |
 | Typecho | `127.0.0.1:8083` | Typecho Web |
+| Komari | `127.0.0.1:25774` | Komari Web |
+| 3X-UI | `127.0.0.1:2053` | 3X-UI Web；Xray 入站端口由面板配置 |
 
-默认 HTTP 端口只绑定本机回环地址，避免绕过 Nginx/HTTPS 直接暴露到公网。配置域名后，对外访问入口由 Nginx 的 80/443 端口提供。
+默认 HTTP 端口只绑定本机回环地址，避免绕过 Nginx/HTTPS 直接暴露到公网。配置域名后，对外访问入口由 Nginx 的 80/443 端口提供。3X-UI 的代理入站端口由面板配置；如需开放代理入站端口，请自行调整 Docker Compose 端口映射和防火墙策略。
 
-如果端口冲突，可编辑对应目录下的 `docker-compose.yml` 后重启服务。
+如果端口冲突，推荐重新运行交互式部署并输入新的 Web 端口，或通过 `APPS_PORT=<端口>` 重新部署。
 
 ## 域名、Nginx 和 HTTPS 证书
 
-脚本支持两种方式配置外网访问域名。配置 `proxy` 前请先安装 acme.sh，默认路径为 `/root/.acme.sh/acme.sh`，或通过 `ORACLE_SERVICES_ACME_HOME` / `ORACLE_SERVICES_ACME_SH` 指定已有安装路径。自定义 acme.sh 路径必须是安全绝对路径，且目录链和可执行文件应由 root 拥有、不可被普通用户写入；脚本会在执行前规范化并校验这些路径。推荐通过交互式菜单选择：
+脚本支持两种方式配置外网访问域名。配置 `proxy` 前请先安装 acme.sh，默认路径为 `/root/.acme.sh/acme.sh`，或通过 `APPS_ACME_HOME` / `APPS_ACME_SH` 指定已有安装路径。自定义 acme.sh 路径必须是安全绝对路径，且目录链和可执行文件应由 root 拥有、不可被普通用户写入；脚本会在执行前规范化并校验这些路径。推荐通过交互式菜单选择：
 
 ```bash
-sudo bash oracle_app_services.sh
+sudo bash install_apps.sh
 ```
 
 也可以继续使用命令参数，适合自动化脚本：
@@ -252,14 +346,14 @@ sudo bash oracle_app_services.sh
 ```bash
 # 方式一：Let's Encrypt + acme.sh + Cloudflare Token（推荐，默认）
 sudo CF_Token="你的 Cloudflare API Token" CF_Zone_ID="你的 Zone ID" \
-  bash oracle_app_services.sh deploy wordpress blog.example.com
+  bash install_apps.sh deploy wordpress blog.example.com
 
 sudo CF_Token="你的 Cloudflare API Token" CF_Zone_ID="你的 Zone ID" \
-  bash oracle_app_services.sh proxy wordpress blog.example.com
+  bash install_apps.sh proxy wordpress blog.example.com
 
 # 方式二：Let's Encrypt standalone（无 Cloudflare Token 时使用）
-sudo ORACLE_SERVICES_CERT_MODE=standalone \
-  bash oracle_app_services.sh proxy wordpress blog.example.com
+sudo APPS_CERT_MODE=standalone \
+  bash install_apps.sh proxy wordpress blog.example.com
 ```
 
 命令格式：
@@ -271,9 +365,9 @@ proxy <service> <domain>
 
 `proxy` 会自动处理：
 
-- 生成 Nginx 反向代理配置，默认写入 `/etc/nginx/conf.d/oracle-<service>-<domain>.conf`。
+- 生成 Nginx 反向代理配置，默认写入 `/etc/nginx/conf.d/app-<service>-<domain>.conf`。
 - 将域名转发到对应本机端口：Hugo `8080`、WordPress `8081`、Halo `8082`、Typecho `8083`。
-- 使用 acme.sh + Let's Encrypt 签发证书；默认走 Cloudflare DNS-01，也可通过 `ORACLE_SERVICES_CERT_MODE=standalone` 使用 standalone。
+- 使用 acme.sh + Let's Encrypt 签发证书；默认走 Cloudflare DNS-01，也可通过 `APPS_CERT_MODE=standalone` 使用 standalone。
 - 安装证书到 `/etc/nginx/ssl/<domain>/fullchain.cer` 和 `/etc/nginx/ssl/<domain>/private.key`。
 - 执行 `nginx -t` 并 reload Nginx。
 - 写入 root `crontab` 续期任务，续期日志位于 `/etc/nginx/ssl/<domain>/acme-renew.log`。
@@ -289,9 +383,9 @@ proxy_buffering off;
 
 ### 证书方式
 
-默认方式是 `ORACLE_SERVICES_CERT_MODE=cloudflare`，也就是 Let's Encrypt + acme.sh + Cloudflare DNS-01。这个方式不需要停止 Nginx，也不依赖 80 端口完成验证，推荐优先使用。
+默认方式是 `APPS_CERT_MODE=cloudflare`，也就是 Let's Encrypt + acme.sh + Cloudflare DNS-01。这个方式不需要停止 Nginx，也不依赖 80 端口完成验证，推荐优先使用。
 
-没有 Cloudflare Token 时，可以使用 `ORACLE_SERVICES_CERT_MODE=standalone`。standalone 会临时停止 Nginx，让 acme.sh 监听 80 端口完成验证，然后再启动并 reload Nginx。使用前请确认域名 A/AAAA 记录已经解析到当前实例，且云防火墙/系统防火墙允许 80 端口入站。
+没有 Cloudflare Token 时，可以使用 `APPS_CERT_MODE=standalone`。standalone 会临时停止 Nginx，让 acme.sh 监听 80 端口完成验证，然后再启动并 reload Nginx。使用前请确认域名 A/AAAA 记录已经解析到当前实例，且云防火墙/系统防火墙允许 80 端口入站。
 
 ### Cloudflare DNS-01 凭据
 
@@ -307,7 +401,7 @@ DNS & Zones / Zone / Read
 ```bash
 export CF_Token="你的 Cloudflare API Token"
 export CF_Zone_ID="你的 Zone ID"
-sudo -E bash oracle_app_services.sh proxy wordpress blog.example.com
+sudo -E bash install_apps.sh proxy wordpress blog.example.com
 ```
 
 不要把 Cloudflare Token 写入项目文件、公开文档、`/etc/profile` 或 `~/.bashrc`。首次签发成功后，acme.sh 会把 DNS API 凭据保存到 root 的 acme.sh 账户配置中，应保持 root-only 权限。
@@ -315,17 +409,17 @@ sudo -E bash oracle_app_services.sh proxy wordpress blog.example.com
 ### dry-run 预览域名配置
 
 ```bash
-ORACLE_SERVICES_DRY_RUN=1 bash oracle_app_services.sh deploy wordpress blog.example.com
-ORACLE_SERVICES_DRY_RUN=1 bash oracle_app_services.sh proxy wordpress blog.example.com
-ORACLE_SERVICES_DRY_RUN=1 ORACLE_SERVICES_CERT_MODE=standalone \
-  bash oracle_app_services.sh proxy wordpress blog.example.com
+APPS_DRY_RUN=1 bash install_apps.sh deploy wordpress blog.example.com
+APPS_DRY_RUN=1 bash install_apps.sh proxy wordpress blog.example.com
+APPS_DRY_RUN=1 APPS_CERT_MODE=standalone \
+  bash install_apps.sh proxy wordpress blog.example.com
 ```
 
 `dry-run` 会输出将生成的 Compose、Nginx、acme.sh 签发/安装命令和续期 crontab，不会写入系统目录，也不会输出 `CF_Token` 的值。
 
 ### DNS 配置提示
 
-请先在 DNS 服务商处把域名解析到当前 Oracle 实例公网 IP。若域名托管在 Cloudflare：
+请先在 DNS 服务商处把域名解析到当前 Linux 服务器公网 IP。若域名托管在 Cloudflare：
 
 - 普通博客访问可以使用橙云代理。
 - 如果后续有长耗时接口或大文件直连需求，可参考灰云 / DNS only 模式，避免被 Cloudflare 代理层超时限制影响。
@@ -335,14 +429,14 @@ ORACLE_SERVICES_DRY_RUN=1 ORACLE_SERVICES_CERT_MODE=standalone \
 以 WordPress 为例：
 
 ```bash
-sudo bash oracle_app_services.sh status wordpress
-sudo bash oracle_app_services.sh verify wordpress
-sudo bash oracle_app_services.sh logs wordpress
-sudo bash oracle_app_services.sh stop wordpress
-sudo bash oracle_app_services.sh uninstall wordpress
+sudo bash install_apps.sh status wordpress
+sudo bash install_apps.sh verify wordpress
+sudo bash install_apps.sh logs wordpress
+sudo bash install_apps.sh stop wordpress
+sudo bash install_apps.sh uninstall wordpress
 ```
 
-默认部署目录位于 `/opt/oracle-services`，且 `docker-compose.yml` 权限为 `600`，通常需要 root 权限读取和管理。如果你使用自有 `ORACLE_SERVICES_HOME` 且当前用户具备 Docker 权限，可以不加 `sudo`。
+默认部署目录位于 `/opt/apps`，且 `docker-compose.yml` 权限为 `600`，通常需要 root 权限读取和管理。如果你使用自有 `APPS_HOME` 且当前用户具备 Docker 权限，可以不加 `sudo`。
 
 `verify` 会读取服务目录中的 `docker-compose.yml`，执行 `docker compose ps`，并在输出包含 `exited`、`dead`、`unhealthy` 或 `restarting` 时返回失败。
 
@@ -353,21 +447,23 @@ sudo bash oracle_app_services.sh uninstall wordpress
 预览部署文件，不写入目录、不启动容器：
 
 ```bash
-ORACLE_SERVICES_DRY_RUN=1 bash oracle_app_services.sh deploy hugo
-ORACLE_SERVICES_DRY_RUN=1 bash oracle_app_services.sh deploy wordpress
-ORACLE_SERVICES_DRY_RUN=1 bash oracle_app_services.sh deploy halo
-ORACLE_SERVICES_DRY_RUN=1 bash oracle_app_services.sh deploy typecho
+APPS_DRY_RUN=1 bash install_apps.sh deploy hugo
+APPS_DRY_RUN=1 bash install_apps.sh deploy wordpress
+APPS_DRY_RUN=1 bash install_apps.sh deploy halo
+APPS_DRY_RUN=1 bash install_apps.sh deploy typecho
+APPS_DRY_RUN=1 bash install_apps.sh deploy komari
+APPS_DRY_RUN=1 bash install_apps.sh deploy 3x-ui
 ```
 
-注意：如果服务目录下已经存在 `.env`，dry-run 会复用其中的 `ORACLE_SERVICE_PASSWORD` 语义，但输出 Compose 预览时会用 `<redacted-existing-password>` 代替真实密码。没有现有 `.env` 时，dry-run 中生成的密码只用于预览，不会持久化。仍建议不要把完整 dry-run 输出直接粘贴到公开日志或 Issue。
+注意：如果服务目录下已经存在 `.env`，dry-run 会复用其中的 `APP_PASSWORD` 语义，但输出 Compose 预览时会用 `<redacted-existing-password>` 代替真实密码。没有现有 `.env` 时，dry-run 中生成的密码只用于预览，不会持久化。仍建议不要把完整 dry-run 输出直接粘贴到公开日志或 Issue。
 
 ## 密码与数据
 
 脚本会在每个服务目录下创建 `.env`：
 
 ```bash
-ORACLE_SERVICE=wordpress
-ORACLE_SERVICE_PASSWORD=<generated-password>
+APP_NAME=wordpress
+APP_PASSWORD=<generated-password>
 ```
 
 说明：
@@ -376,7 +472,7 @@ ORACLE_SERVICE_PASSWORD=<generated-password>
 - WordPress、Halo、Typecho 会在 Compose 环境变量中使用该密码。
 - Hugo 当前也会生成 `.env`，但默认 Hugo Compose 不使用该密码；保留它是为了统一服务目录结构。
 - 重复部署会复用已有密码，避免数据库已有数据无法登录。
-- 如果 `.env` 已存在但缺少 `ORACLE_SERVICE_PASSWORD`，脚本会补写该字段。
+- 如果 `.env` 已存在但缺少 `APP_PASSWORD`，脚本会补写该字段。
 - `.env` 和 `data/` 目录可能包含敏感信息或持久化数据，不应提交到 Git。
 
 ## 安全提示
@@ -394,7 +490,7 @@ ORACLE_SERVICE_PASSWORD=<generated-password>
 先安装 Docker：
 
 ```bash
-sudo bash oracle_app_services.sh install-docker
+sudo bash install_apps.sh install-docker
 ```
 
 或手动安装 Docker Compose 插件。
@@ -410,14 +506,14 @@ sudo ss -lntp
 修改对应服务目录下 `docker-compose.yml` 的 `ports` 映射后重新部署：
 
 ```bash
-cd /opt/oracle-services/wordpress
+cd /opt/apps/wordpress
 sudo docker compose up -d
 ```
 
 ### 查看容器日志
 
 ```bash
-bash oracle_app_services.sh logs halo
+bash install_apps.sh logs halo
 ```
 
 ### 备份服务数据
@@ -425,7 +521,7 @@ bash oracle_app_services.sh logs halo
 示例：
 
 ```bash
-sudo tar -czf wordpress-backup.tar.gz /opt/oracle-services/wordpress
+sudo tar -czf wordpress-backup.tar.gz /opt/apps/wordpress
 ```
 
 ## 开源协议
