@@ -358,14 +358,16 @@ http://127.0.0.1:2053/
 sudo bash install_apps.sh
 ```
 
+交互式菜单会在需要参数时现场提示输入，例如部署目录、端口、域名、账号密码、证书模式和 Cloudflare API Token。命令行环境变量主要用于自动化执行，不需要提前记住这些变量名。
+
 也可以继续使用命令参数，适合自动化脚本：
 
 ```bash
 # 方式一：Let's Encrypt + acme.sh + Cloudflare Token（推荐，默认）
-sudo CF_Token="你的 Cloudflare API Token" CF_Zone_ID="你的 Zone ID" \
+sudo CF_Token="你的 Cloudflare API Token" \
   bash install_apps.sh deploy wordpress blog.example.com
 
-sudo CF_Token="你的 Cloudflare API Token" CF_Zone_ID="你的 Zone ID" \
+sudo CF_Token="你的 Cloudflare API Token" \
   bash install_apps.sh proxy wordpress blog.example.com
 
 # 方式二：Let's Encrypt standalone（无 Cloudflare Token 时使用）
@@ -419,13 +421,14 @@ DNS & Zones / DNS  / Edit
 DNS & Zones / Zone / Read
 ```
 
-执行命令前临时传入：
+使用交互式菜单时，选择 Cloudflare 证书模式后会提示输入 Token，输入内容不会回显。使用命令参数自动化执行时，可以在执行命令前临时传入：
 
 ```bash
 export CF_Token="你的 Cloudflare API Token"
-export CF_Zone_ID="你的 Zone ID"
 sudo -E bash install_apps.sh proxy wordpress blog.example.com
 ```
+
+`CF_Zone_ID` 是 acme.sh 的可选变量；通常只需要 `CF_Token`。如果你的 Token 权限或账号下域名较多导致 acme.sh 无法自动识别 zone，可以再额外传入 `CF_Zone_ID`。
 
 建议只在执行签发命令时临时传入 Cloudflare Token，不要长期写入 `/etc/profile` 或 `~/.bashrc`。首次签发成功后，acme.sh 会把 DNS API 凭据保存到 root 的 acme.sh 账户配置中，应保持 root-only 权限。
 

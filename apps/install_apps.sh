@@ -1367,21 +1367,13 @@ EOF
 }
 
 require_cloudflare_credentials() {
-    local missing=""
-
     if [[ -z "${CF_Token:-}" ]]; then
-        missing="CF_Token"
-    fi
-    if [[ -z "${CF_Zone_ID:-}" ]]; then
-        if [[ -n "$missing" ]]; then
-            missing="$missing CF_Zone_ID"
-        else
-            missing="CF_Zone_ID"
-        fi
-    fi
-    if [[ -n "$missing" ]]; then
-        printf '缺少 Cloudflare DNS-01 凭据环境变量：%s\n' "$missing" >&2
+        printf '缺少 Cloudflare DNS-01 凭据环境变量：CF_Token\n' >&2
         return 1
+    fi
+    export CF_Token
+    if [[ -n "${CF_Zone_ID:-}" ]]; then
+        export CF_Zone_ID
     fi
     return 0
 }
@@ -2157,6 +2149,64 @@ EOF
     done
 }
 
+prompt_cloudflare_credentials() {
+    local token_value zone_value
+
+    MENU_CANCELLED=0
+    MENU_RETURNED=0
+    while true; do
+        printf 'CF_Token参考配置教程：https://developers.cloudflare.com/fundamentals/api/get-started/create-token/\n'
+        if [[ -n "${CF_Token:-}" ]]; then
+            printf 'Cloudflare API Token [已设置，回车沿用，输入 0 返回]：'
+        else
+            printf 'Cloudflare API Token [输入 0 返回]：'
+        fi
+        IFS= read -r -s token_value || return 1
+        printf '\n'
+        case "$token_value" in
+            0|q|quit|exit)
+                MENU_CANCELLED=1
+                MENU_RETURNED=1
+                return 1
+                ;;
+            '')
+                if [[ -n "${CF_Token:-}" ]]; then
+                    break
+                fi
+                printf 'Cloudflare API Token 不能为空。\n' >&2
+                ;;
+            *)
+                CF_Token="$token_value"
+                break
+                ;;
+        esac
+    done
+
+    if [[ -n "${CF_Zone_ID:-}" ]]; then
+        printf 'Cloudflare Zone ID [可选，已设置，回车沿用，输入 - 清空，输入 0 返回]：'
+    else
+        printf 'Cloudflare Zone ID [可选，通常可直接回车跳过，输入 0 返回]：'
+    fi
+    IFS= read -r zone_value || return 1
+    case "$zone_value" in
+        0|q|quit|exit)
+            MENU_CANCELLED=1
+            MENU_RETURNED=1
+            return 1
+            ;;
+        -)
+            unset CF_Zone_ID
+            ;;
+        '')
+            ;;
+        *)
+            CF_Zone_ID="$zone_value"
+            ;;
+    esac
+
+    require_cloudflare_credentials || return 1
+}
+
 prompt_backup_target() {
     local choice state
 
@@ -2423,6 +2473,9 @@ run_menu_action() {
             fi
             if [[ -n "$domain" ]]; then
                 prompt_certificate_mode || return 0
+                if [[ "$DRY_RUN" != "1" && "$CERT_MODE" == "cloudflare" ]]; then
+                    prompt_cloudflare_credentials || return 0
+                fi
             fi
             show_section "部署/更新服务：$service"
             ( deploy_service "$service" "$domain" )
@@ -2436,6 +2489,9 @@ run_menu_action() {
             prompt_required_domain || return 0
             domain="$MENU_VALUE"
             prompt_certificate_mode || return 0
+            if [[ "$DRY_RUN" != "1" && "$CERT_MODE" == "cloudflare" ]]; then
+                prompt_cloudflare_credentials || return 0
+            fi
             show_section "配置 HTTPS 反向代理：$service -> $domain"
             ( configure_proxy "$service" "$domain" )
             ;;

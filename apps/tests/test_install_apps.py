@@ -399,6 +399,56 @@ class InstallAppsTests(ScriptTestCase):
         self.assertIn("--standalone -d blog.example.com", result.stdout)
         self.assertNotIn("--dns dns_cf", result.stdout)
 
+    def test_services_menu_prompts_cloudflare_token_without_echoing_it(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            bin_dir = root / "bin"
+            nginx_conf_dir = root / "nginx"
+            nginx_ssl_dir = root / "ssl"
+            acme_home = root / "acme"
+            acme_sh = acme_home / "acme.sh"
+            bin_dir.mkdir()
+            nginx_conf_dir.mkdir()
+            nginx_ssl_dir.mkdir()
+            acme_home.mkdir()
+            self.write_fake_proxy_commands(bin_dir)
+            acme_sh.write_text(
+                "#!/bin/sh\n"
+                "while [ $# -gt 0 ]; do\n"
+                "  case \"$1\" in\n"
+                "    --fullchain-file) fullchain=\"$2\"; shift 2 ;;\n"
+                "    --key-file) key=\"$2\"; shift 2 ;;\n"
+                "    *) shift ;;\n"
+                "  esac\n"
+                "done\n"
+                "[ -n \"${fullchain:-}\" ] && { mkdir -p \"$(dirname \"$fullchain\")\"; : > \"$fullchain\"; }\n"
+                "[ -n \"${key:-}\" ] && { mkdir -p \"$(dirname \"$key\")\"; : > \"$key\"; }\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            acme_sh.chmod(0o755)
+
+            result = self.run_script_with_input(
+                SERVICES,
+                "5\n2\nblog.example.com\n1\nsensitive-token-value\n\n\n0\n",
+                timeout=10,
+                PATH=f"{bin_dir}:{os.environ['PATH']}",
+                APPS_HOME=str(root / "services"),
+                APPS_NGINX_CONF_DIR=str(nginx_conf_dir),
+                APPS_NGINX_SSL_DIR=str(nginx_ssl_dir),
+                APPS_ACME_HOME=str(acme_home),
+                APPS_ACME_SH=str(acme_sh),
+            )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "CF_Token参考配置教程：https://developers.cloudflare.com/fundamentals/api/get-started/create-token/",
+            result.stdout,
+        )
+        self.assertIn("Cloudflare API Token", result.stdout)
+        self.assertIn("已为 wordpress 配置 HTTPS 反向代理：https://blog.example.com/", result.stdout)
+        self.assertNotIn("sensitive-token-value", result.stdout + result.stderr)
+
     def test_services_menu_can_select_custom_deploy_directory(self):
         result = self.run_script_with_input(
             SERVICES,
@@ -752,11 +802,11 @@ class InstallAppsSecurityRegressionTests(ScriptTestCase):
             "wordpress",
             "blog.example.com",
             APPS_HOME="/tmp/apps-test",
-            CF_Token="sensitive-token-value",
+            CF_Zone_ID="sensitive-zone-id",
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("CF_Zone_ID", result.stderr)
-        self.assertNotIn("sensitive-token-value", result.stdout + result.stderr)
+        self.assertIn("CF_Token", result.stderr)
+        self.assertNotIn("sensitive-zone-id", result.stdout + result.stderr)
 
     def test_services_proxy_standalone_does_not_require_cloudflare_credentials(self):
         self.skip_if_running_as_root()
@@ -1443,7 +1493,6 @@ class InstallAppsSecurityRegressionTests(ScriptTestCase):
                 APPS_ACME_HOME=str(acme_home),
                 APPS_ACME_SH=str(acme_sh),
                 CF_Token="sensitive-token-value",
-                CF_Zone_ID="zone-id-value",
             )
             compose_text = compose_file.read_text(encoding="utf-8")
 
