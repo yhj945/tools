@@ -76,6 +76,8 @@ def request_group(url, size, count, args, directory, token, deadline):
             selector.register(process.stdout,selectors.EVENT_READ,"body")
             selector.register(process.stderr,selectors.EVENT_READ,"error")
             while selector.get_map():
+                if getattr(args, "cancel_event", None) is not None and args.cancel_event.is_set():
+                    reason="试验租约失效，停止请求";process.kill()
                 if time.monotonic()>=until:
                     reason="请求超时或总时限";process.kill()
                 for key,_ in selector.select(.05):
@@ -210,6 +212,8 @@ def idle_requests(url, size, args, deadline):
             if index:
                 until=min(deadline,time.monotonic()+args.idle_seconds)
                 while time.monotonic()<until:
+                    if getattr(args, "cancel_event", None) is not None and args.cancel_event.is_set():
+                        raise TuneError("试验租约失效，停止空闲等待")
                     time.sleep(min(.2,until-time.monotonic()))
             start=time.monotonic();wall_start=time.time();previous=connects;received=0;first=0.;status=0;edge=peer;error=""
             timings.clear()
@@ -307,6 +311,9 @@ def web_bench(host, args):
             directory = Path(temporary)
             for round_no in range(1, args.rounds+1):
                 for index, case in enumerate(matrix):
+                    if getattr(args, "cancel_event", None) is not None and args.cancel_event.is_set():
+                        report["stop_reason"] = "试验租约失效"
+                        return report
                     charge = reserve(case)
                     if report["charged_bytes"] + charge > budget or time.monotonic() >= deadline:
                         report["stop_reason"] = "流量预算不足" if report["charged_bytes"]+charge > budget else "总时限"

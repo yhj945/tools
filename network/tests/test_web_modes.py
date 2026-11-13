@@ -26,6 +26,26 @@ def cases(short=1., download=1., concurrent=1., idle=1.):
 
 
 class ModeTests(LocalFixture):
+    def test_paired_ratios_cannot_hide_distribution_median_regression(self):
+        rows = cases()
+        for row in rows:
+            row['pairs'] = row['pairs'][:3]
+            for pair, before, after in zip(row['pairs'], [1., 2., 10.], [1., 5., 9.]):
+                pair['before']['seconds'] = before
+                pair['after']['seconds'] = after
+        result = evaluate_cases(rows, 'stability')
+        self.assertFalse(result['eligible'])
+        self.assertEqual(result['workloads'][0]['before_median_seconds'], 2.)
+        self.assertEqual(result['workloads'][0]['after_median_seconds'], 5.)
+
+    def test_sparse_retransmissions_do_not_establish_stability_improvement(self):
+        for count in (1, 2, 3):
+            rows = cases()
+            for pair in rows[1]['pairs'][:count]:
+                pair['before']['retransmitted_bytes'] = 1000
+                pair['after']['retransmitted_bytes'] = 100
+            self.assertEqual(evaluate_cases(rows, 'stability')['eligible'], count >= 3)
+
     def test_objective_changes_winner_without_fixed_sysctl_presets(self):
         self.host.gso_state=lambda interface:{**self.host.queue['device'],'max_segs':65535}
         data={'format':RESULTS_FORMAT_V2,'scope':self.host.scope(),'peer':'192.0.2.20','interface':'eth0',

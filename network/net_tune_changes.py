@@ -170,10 +170,15 @@ def build_plan(host, store, args, report=None) -> dict:
             notes.append(hint)
     cc, probe_mss, probe_mode = args.cc, args.mtu_probe_mss, args.mtu_probing
     pacing, single_gso = args.enable_fq_pacing, args.gso_single_segment
+    gso_limit = getattr(args, "gso_max_segs", None)
+    if gso_limit is not None and (single_gso or args.profile == "vless") and gso_limit != 1:
+        raise TuneError("GSO 上限与单分段预设冲突")
     if args.profile == "vless":
         if args.shape_mbps or cc not in (None, "bbr") or probe_mss not in (None, 1290) or probe_mode not in (None, 2):
             raise TuneError("VLESS 预设使用 BBR、fq pacing 和 1290 字节起始 MSS，请移除冲突参数")
         cc, probe_mss, pacing, single_gso = "bbr", 1290, True, True
+    if single_gso:
+        gso_limit = 1
     current_cc = host.sysctl(CC)
     if cc == "auto":
         cc = cc_candidate(report, current_cc) if report is not None else None
@@ -235,7 +240,7 @@ def build_plan(host, store, args, report=None) -> dict:
     shape = gso = None
     queue_requested = args.shape_mbps or pacing
     route_requested = args.initcwnd is not None or args.route_mtu is not None
-    if queue_requested or single_gso:
+    if queue_requested or gso_limit is not None:
         interface = args.interface or (report["route"]["dev"] if report else None)
         if not interface:
             raise TuneError("网卡调整需要 --interface 或同一台主机的测速报告")
@@ -269,12 +274,12 @@ def build_plan(host, store, args, report=None) -> dict:
             host.can_attach(interface, before)
             shape = {"interface": interface, "kind": args.shaper, "rate_mbps": args.shape_mbps,
                      "before": before, "path": path}
-    if single_gso:
+    if gso_limit is not None:
         before = host.gso_state(interface)
-        if before["max_segs"] == 1:
-            notes.append(f"{interface} 的 GSO 分段上限已为 1")
+        if before["max_segs"] == gso_limit:
+            notes.append(f"{interface} 的 GSO 分段上限已为 {gso_limit}")
         else:
-            gso = {"interface": interface, "before": before, "after": {**before, "max_segs": 1}, "path": path}
+            gso = {"interface": interface, "before": before, "after": {**before, "max_segs": gso_limit}, "path": path}
     default_route = None
     if route_requested:
         before = host.default_ipv4_route(include_mtu=args.route_mtu is not None)
@@ -301,7 +306,7 @@ def build_plan(host, store, args, report=None) -> dict:
         store.check_boot_config(backend, config_values(after))
         if before != after:
             config = {"before": before, "after": after, "backend": backend}
-    gso_persistence = store.gso_persistence.plan(interface, host.gso_state(interface)) if single_gso and args.persist else None
+    gso_persistence = store.gso_persistence.plan(interface, host.gso_state(interface), gso_limit) if gso_limit is not None and args.persist else None
     if not any(change["before"] != change["after"] for change in changes) and not (shape or gso or default_route or config or gso_persistence):
         notes.append("当前证据没有产生参数变更")
     plan_format = plan_version(default_route, gso, gso_persistence)
@@ -397,8 +402,9 @@ def validate_plan(plan: dict) -> None:
             if (not isinstance(gso["interface"], str) or set(before) != {"ifindex", "address", "max_segs"}
                     or type(before["ifindex"]) is not int or before["ifindex"] < 1
                     or not (before["address"] is None or isinstance(before["address"], str))
-                    or type(before["max_segs"]) is not int or not 2 <= before["max_segs"] <= 65535
-                    or type(after["max_segs"]) is not int or after != {**before, "max_segs": 1}
+                    or type(before["max_segs"]) is not int or not 1 <= before["max_segs"] <= 65535
+                    or type(after["max_segs"]) is not int or not 1 <= after["max_segs"] <= 65535
+                    or after != {**before, "max_segs": after["max_segs"]} or before == after
                     or not valid_path(gso["path"], gso["interface"])):
                 raise ValueError
         if default_route is not None:
@@ -406,9 +412,10 @@ def validate_plan(plan: dict) -> None:
         if gso_persistence is not None:
             GSOPersistence(None).validate(gso_persistence)
             if gso is None:
-                if gso_persistence["max_segs"] != 1:
+                if gso_persistence["max_segs"] != gso_persistence.get("target_max_segs", 1):
                     raise ValueError
             elif (gso["interface"] != gso_persistence["interface"]
+                  or gso["after"]["max_segs"] != gso_persistence.get("target_max_segs", 1)
                   or any(gso["before"][key] != gso_persistence[key] for key in ("ifindex", "address", "max_segs"))):
                 raise ValueError
         config = plan["config"]
@@ -593,7 +600,7 @@ class Transactions:
         return next((row for row in records if row["state"] in {"applying", "reverting"}
                      and self.same_scope(row)), None)
 
-    def apply(self, plan: dict):
+    def apply(self, plan: dict, journal_hook=None):
         self.check_current(plan)
         steps = [{"type": "sysctl", **change} for change in plan["sysctl"]
                  if change["before"] != change["after"]]
@@ -650,6 +657,9 @@ class Transactions:
                 "initial_netns": self.host.in_init_netns(), "steps": steps,
                 "attempted": 0, "state": "applying",
             }
+            # A detached recovery lease must know the id before any durable write.
+            if journal_hook:
+                journal_hook(journal["id"])
             self.save(journal)
             try:
                 for index, step in enumerate(steps):
@@ -715,7 +725,7 @@ class Transactions:
                 raise TuneError("整形速率读回不匹配")
         elif kind == "gso":
             interface = step["interface"]
-            self.host.set_gso_max_segs(interface, 1)
+            self.host.set_gso_max_segs(interface, step["after"]["max_segs"])
             if self.host.gso_state(interface) != step["after"]:
                 raise TuneError(f"{interface} 的 GSO 上限读回不匹配")
         elif kind == "default_route":
@@ -763,7 +773,10 @@ class Transactions:
                 if not same_boot and (kind in ("qdisc", "gso", "default_route") or kind == "sysctl" and not persisted):
                     continue
                 try:
-                    self.restore_step(step)
+                    if kind == "gso_persistence":
+                        self.gso_persistence.restore(step, replace_file, restore_runtime=same_boot)
+                    else:
+                        self.restore_step(step)
                 except (TuneError, OSError) as exc:
                     errors.append(str(exc))
             journal["state"] = "reverting" if errors else "rolled_back"

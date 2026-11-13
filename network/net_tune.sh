@@ -2,7 +2,7 @@
 set -euo pipefail
 
 archive_url=https://codeload.github.com/yhj945/tools/zip/refs/heads/main
-modules=(net_tune.py net_tune_auto.py net_tune_bench.py net_tune_changes.py net_tune_gso.py net_tune_modes.py net_tune_system.py net_tune_web.py)
+modules=(net_tune.py net_tune_auto.py net_tune_bench.py net_tune_changes.py net_tune_gso.py net_tune_modes.py net_tune_observe.py net_tune_optimize.py net_tune_system.py net_tune_trial.py net_tune_web.py)
 
 fail() {
     printf '错误 %s\n' "$*" >&2
@@ -33,7 +33,7 @@ find_missing() {
     ip -j -V >/dev/null 2>&1 || missing+=(ip)
     tc -j -V >/dev/null 2>&1 || missing+=(tc)
     local tool
-    for tool in ss iperf3 ping stdbuf curl; do
+    for tool in ss iperf3 ping stdbuf curl ssh; do
         command -v "$tool" >/dev/null || missing+=("$tool")
     done
 }
@@ -74,6 +74,9 @@ install_dependencies() {
             apt-get:ping) package=iputils-ping ;;
             *:ping) package=iputils ;;
             *:stdbuf) package=coreutils ;;
+            apt-get:ssh) package=openssh-client ;;
+            dnf:ssh|yum:ssh) package=openssh-clients ;;
+            *:ssh) package=openssh ;;
             *) package=$tool ;;
         esac
         if [[ " ${packages[*]} " != *" $package "* ]]; then

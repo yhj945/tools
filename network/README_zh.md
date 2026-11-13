@@ -1,8 +1,8 @@
 # Linux VPS 网络调优
 
-`net_tune.py` 用于查看 VPS 的网络配置、按流量预算测速，并根据结果生成调优方案。直接运行只读取本机信息。调优方案会在应用前显示原值和新值，应用后可以回滚。
+`net_tune.py` 用于查看 VPS 网络配置，并在同一业务路径上试用、比较和筛选调优方案。直接运行只读取信息；`optimize` 默认也只预览。确认执行后，工具自动测当前配置、临时试用候选、独立复测，再决定保留或恢复。
 
-当前版本为 **1.0.0**。支持五种优化侧重点、业务路径对比，以及 TCP 参数和 GSO 的开机加载。
+当前版本为 **1.0.0**。支持五种优化侧重点、发送端重传采集、自动回滚，以及 TCP 参数和 GSO 的开机加载。没有足够证据时保留原配置，不保证每台机器都能提速。
 
 ## 快速开始
 
@@ -37,15 +37,75 @@ bash <(curl -fsSL https://raw.githubusercontent.com/yhj945/tools/main/network/ne
 | 并发 | `--mode concurrency` | 多请求同时传输的总吞吐，同时保护最慢请求 |
 
 ```bash
-./net_tune.py auto --mode daily
-./net_tune.py auto --mode stability
+./net_tune.py optimize --mode daily
+./net_tune.py optimize --mode stability
 ```
 
-下载/均衡的传输初筛可继续使用下面的 iperf3 流程；日常、稳定性、并发请看[业务测试](#测日常访问与偶发卡顿)。
+这两条命令只预览候选，不测速或修改配置。稳定性模式不能保证修复机房拥塞、Wi-Fi 干扰等链路问题。
 
-这两条命令只识别本机、选择目标，不测速或修改配置。稳定性模式不能保证修复机房拥塞、Wi-Fi 干扰等链路问题；没有候选通过验收时保留原配置。
+### 2. 自动试验并优选
 
-### 2. 在测速机上启动 iperf3
+**测 VPS 自身访问网站的路径**，在 VPS 上运行：
+
+```bash
+# 只读预览：显示候选参数、预算和预计等待时间
+sudo ./net_tune.py optimize --mode daily --budget-mib 512
+
+# 显示预览，输入 y 后开始；通过两次对照才保留
+sudo ./net_tune.py optimize --mode daily --budget-mib 512 --apply --persist
+```
+
+没有本地脚本时，在 VPS 的 root Bash 终端运行：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/yhj945/tools/main/network/net_tune.sh) \
+  --install-deps optimize --mode daily --budget-mib 512 --apply --persist
+```
+
+默认使用 Cloudflare 的指定大小测试对象，也可用 `--url 'https://你的测试地址?bytes={bytes}'` 指定对端。测试地址须支持按 `{bytes}` 返回指定大小内容，或支持 HTTP Range 的足够大固定文件。
+
+**测真实代理体验**，在正在使用代理的 Linux 客户端运行，把 `MY_VPS`、`7890`、`443` 换成自己的 SSH 主机别名、本地 SOCKS 代理端口和 VPS 代理监听端口：
+
+```bash
+./net_tune.py optimize --ssh root@MY_VPS \
+  --proxy socks5h://127.0.0.1:7890 --service-port 443 \
+  --mode daily --budget-mib 512 --apply --persist
+```
+
+本地代理必须已指向这台 VPS。工具通过 SSH 调整 VPS，HTTP 请求经过已有代理；不会替你切换代理节点。首次使用需先能正常执行 `ssh root@MY_VPS`，VPS 需有 Python 3.8+、完整 iproute2 和 `stdbuf`。可先在 VPS 执行本页第一条远程安装命令补齐依赖。客户端需要 curl、Python 和 SSH；可用本地入口 `bash net_tune.sh --install-deps optimize ...` 自动补齐。
+
+需要固定网站 IP 时，用 `--proxy socks5://127.0.0.1:7890` 搭配 `--resolve HOST:443:IP`。`socks5h` 把解析交给代理端，不能与固定 IP 对照混用。复用连接或多路复用导致无法唯一匹配发送连接时，工具会报告证据不足，不把未知重传当作零。
+
+### 3. 看结果
+
+运行结束会显示报告目录。打开 `REPORT.md` 看结论和各负载差值；`report.json` 保留预算、配置快照、事务编号和判定依据。可用 `--output results-daily` 指定尚不存在的目录。
+
+- **已保留候选**：初筛和反向顺序复核均通过，并完成最终健康检查。加了 `--persist` 才会写入 TCP/GSO 启动配置。
+- **未确认收益**：改善不足、保护指标退化或缺少必要证据，恢复试验前配置。
+- **恢复待确认**：SSH 不通或配置被其他程序改动。先恢复 SSH，再在 VPS 用 `status`、`rollback --dry-run` 查看报告中的事务；工具不会覆盖第三方修改。
+
+预算覆盖本次所有候选、对照、复核、健康检查及 32 MiB 控制预留，首轮与失败、中断都计入预算且不退款。预留是负载和余量估算，不是云厂商计费流量的硬上限；入口下载脚本和安装软件包的流量另计。预算不足以完成一个候选的两次对照时，会在部署和调参前停止。
+
+通常每阶段 3 轮，日常模式仅空闲等待就需 60 秒，稳定性模式需 180 秒。一个候选的完整 A/B/B/A 对照有 4 个阶段，再加请求本身耗时；可用 `--rounds`、`--idle-seconds` 和 `--deadline` 调整。减少等待会削弱对空闲后断流的覆盖。
+
+试用期间，VPS 上有独立的回滚进程。控制程序退出或 SSH 续期失败，未提交保留的试验将在最后续期 90 秒后尝试恢复。写入失败、复测不通过或预算/时限耗尽也会恢复；掉电及配置冲突仍需恢复后核验。RTO 下限不变，发现可读取的系统下限不是 200 ms 时拒绝自动试验。
+
+<details>
+<summary>自动优选的范围与证据要求</summary>
+
+工具识别默认出口、内核算法及已有管理记录，从 GSO 上限、MTU 探测、代理传输组合、初始窗口和拥塞控制中生成最多三个适用候选。候选数有限，结果只针对本次对端和时段；它不是穷举所有网络参数。
+
+每次初筛后先恢复当前配置，再以 B/A 顺序复核筛选出的候选。评估器同时检查实际样本中位数、配对耗时、p95、完成率与吞吐。代理下载还要求至少三对可唯一匹配的发送端重传记录；切换拥塞控制时核验业务连接实际采用的算法。缺失和有歧义的数据不参与收益判定。
+
+`--compare-initial` 只试验工具事务日志中可重建的介入前参数，仍需 `--apply` 才开始。它不猜测出厂配置；缺少历史或存在无法重建的变更时拒绝比较。报告明确区分“试验前当前配置”和“介入前已记录配置”。
+
+VPS 本机 HTTP 下载测的是 VPS 到网站的路径，无法靠本机接收端证明远端发送的重传数量；需要评估 VPS 向代理客户端发送数据的重传时，应使用上面的 SSH + 真实代理方式。短时测试也不能代替浏览器首屏、HTTP/2、HTTP/3 或长期稳定性验证。
+
+</details>
+
+## 使用自有 iperf3 对端测速
+
+### 在测速机上启动 iperf3
 
 使用自己管理或已获准使用的测速机。VPS 和测速机都需要 iperf3 3.9 或更新版本。在**测速机**上运行以下命令，并确保 VPS 能访问它的 TCP 5201 端口。
 
@@ -53,7 +113,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/yhj945/tools/main/network/ne
 iperf3 -s -J
 ```
 
-### 3. 回到 VPS，测速并确认方案
+### 回到 VPS，测速并确认方案
 
 把 `PEER` 换成测速机的 IP 或域名。先用第一条命令估算轮数和流量，再运行第二条命令测速。若有可应用的方案，终端会列出变更并等待确认。输入 `y` 后回车即可应用，直接回车则取消。已用 root 登录时可以省略 `sudo`。
 
@@ -217,7 +277,7 @@ sudo ./net_tune.py apply plan.json
 
 ### 重启后继续生效
 
-调优默认在本次启动内生效。需要重启后继续加载时，在 `auto` 或 `plan` 中加 `--persist`，再预览和应用。TCP 参数写入 `/etc/sysctl.d/90-net-tune.conf`，工具会检查启动加载器和配置覆盖。
+调优默认在本次启动内生效。需要重启后继续加载时，在 `optimize`、`auto` 或 `plan` 中加 `--persist`，再预览和应用；`optimize` 仅持久化通过独立复核的候选。TCP 参数写入 `/etc/sysctl.d/90-net-tune.conf`，工具会检查启动加载器和配置覆盖。
 
 GSO 也支持开机加载。例如，已经实测确认单段 GSO 有收益后，可以这样保存；即使当前值已经为 1，也会补齐启动配置：
 
@@ -283,6 +343,7 @@ GSO（Generic Segmentation Offload，通用分段卸载）让 Linux 在内部先
 | 查看系统和网络状态 | 可读的 `/proc`、`/sys`。查看路由、网卡和队列还需支持 JSON 输出的 iproute2（`ip`、`tc`）。Alpine 需要完整的 iproute2 |
 | 主动测速 | iperf3 3.9 或更新版本。安装 `ping` 可采集空载 RTT |
 | HTTP 业务测试 | curl 7.29 或更新版本；空闲连接测试还会使用 Python 标准库 |
+| 自动候选试验 | VPS 的 root 权限；真实代理测试还需要客户端 SSH、VPS 上支持 `ss -E -i` 的 iproute2 及 `stdbuf` |
 | 应用和回滚 | root 及目标网络命名空间的写权限。出向整形还需内核支持 CAKE 或 TBF |
 | 持久化 TCP 参数 | systemd，或已启用 `sysctl` 启动服务且支持 `sysctl --system` 的 OpenRC |
 | 持久化 GSO | systemd 或 OpenRC，以及可写 GSO 分段上限的内核和 iproute2 |
@@ -294,7 +355,7 @@ GSO（Generic Segmentation Offload，通用分段卸载）让 Linux 在内部先
 
 诊断 JSON 包含网卡统计、有效内存上限，以及 TCP、UDP 和 softnet 累计计数。比较累计计数时，观察相同时长内的增量。
 
-退出码 `0` 表示成功或完成预览，`1` 表示输入、环境或写入错误，`2` 表示测速报告不完整，`130` 表示操作中断。
+退出码 `0` 表示成功、完成预览或完成比较后无收益，`1` 表示输入、环境或写入错误，`2` 表示测速报告不完整或自动试验失败/中断，`3` 表示自动试验恢复待确认；其他命令的操作中断为 `130`。判定是否保留候选请查看报告的 `selected` 和 `state`，不能只看退出码。
 
 </details>
 

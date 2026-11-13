@@ -91,7 +91,7 @@ def evaluate_workload(workload):
 
 
 def candidate_settings(values):
-    ranges = {"initcwnd": (1, 65535), "route_mtu": ROUTE_MTU_RANGE, "mtu_probe_mss": PROBE_MSS_RANGE, "mtu_probing": (0, 2)}
+    ranges = {"initcwnd": (1, 65535), "route_mtu": ROUTE_MTU_RANGE, "mtu_probe_mss": PROBE_MSS_RANGE, "mtu_probing": (0, 2), "gso_max_segs": (1, 65535)}
     boolean = ("gso_single_segment", "enable_fq_pacing")
     if not isinstance(values, dict) or not values or set(values) - {"cc", "profile", *ranges, *boolean}:
         raise ValueError
@@ -139,7 +139,7 @@ def choose_results(host, store, data, parse, persist=False, mode="balanced"):
             if {"initcwnd", "route_mtu"} & settings.keys() and "route" not in data["baseline"]:
                 raise ValueError
             design = parse(["plan"])
-            if any(settings.get(k) for k in ("profile", "gso_single_segment", "enable_fq_pacing", "initcwnd", "route_mtu")):
+            if any(settings.get(k) for k in ("profile", "gso_single_segment", "gso_max_segs", "enable_fq_pacing", "initcwnd", "route_mtu")):
                 design.interface = interface
             vars(design).update(settings)
             design.persist = persist
@@ -186,7 +186,7 @@ def choose_business_results(host, store, data, parse, persist, mode):
             if {"initcwnd", "route_mtu"} & settings.keys() and "route" not in data["baseline"]:
                 raise ValueError
             design = parse(["plan"])
-            if any(settings.get(k) for k in ("profile", "gso_single_segment", "enable_fq_pacing", "initcwnd", "route_mtu")):
+            if any(settings.get(k) for k in ("profile", "gso_single_segment", "gso_max_segs", "enable_fq_pacing", "initcwnd", "route_mtu")):
                 design.interface = interface
             vars(design).update(settings, persist=persist)
             try:

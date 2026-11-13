@@ -33,7 +33,10 @@ class GSOPersistenceTests(LocalFixture):
         if action in {"enable", "disable"}:
             self.service["enabled"] = action == "enable"
         else:
-            boot_adjust(self.host, action, step["interface"], step["address"], self.run, wait=0)
+            files = self.manager.snapshot(step)["files"]
+            target = self.manager.service_target(step, files)
+            boot_adjust(self.host, action, step["interface"], step["address"], self.run, wait=0,
+                        target=target)
             self.service["active"] = action == "start"
 
     def persistent_plan(self):
@@ -62,6 +65,20 @@ class GSOPersistenceTests(LocalFixture):
         self.assertNotIn("gso_persistence", self.persistent_plan())
         self.store.rollback(identifier)
         self.assertEqual(self.link["max_segs"], 1)
+
+    def test_change_existing_persisted_limit_and_restore_previous_service(self):
+        first = self.store.apply(self.persistent_plan())
+        original = self.manager.snapshot({"interface":"eth0", "address":self.link["address"], "backend":"systemd"})
+        plan = self.plan("--interface", "eth0", "--gso-max-segs", "65535", "--persist")
+        validate_plan(plan)
+        second = self.store.apply(plan)
+        self.assertEqual(self.link["max_segs"], 65535)
+        boot_adjust(self.host, "start", "eth0", self.link["address"], self.run, wait=0, target=65535)
+        self.store.rollback(second)
+        self.assertEqual(self.link["max_segs"], 1)
+        self.assertEqual(self.manager.snapshot(plan["gso_persistence"]), original)
+        self.store.rollback(first)
+        self.assertEqual(self.link["max_segs"], 65535)
 
     def test_failed_service_start_rolls_back_runtime_files_and_service(self):
         def failure(step, action):

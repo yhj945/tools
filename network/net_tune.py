@@ -90,6 +90,30 @@ def parser():
     automatic.add_argument("--persist", action="store_true", help="将优选的 TCP 和 GSO 参数加入开机加载计划")
     json_option(automatic)
 
+    optimize = sub.add_parser("optimize", help="预览候选；确认后自动试验、采集重传、独立复核并保留或回滚")
+    optimize.add_argument("--mode", choices=MODES, default="balanced")
+    optimize.add_argument("--url", action="append", help="固定 HTTP(S) 测试对象，默认 Cloudflare 指定大小对象")
+    optimize.add_argument("--proxy", help="客户端现有 SOCKS5/HTTP 代理端口")
+    optimize.add_argument("--ssh", help="要调优的 VPS，使用现有 SSH 别名或 root@host")
+    optimize.add_argument("--ssh-config", help="可选 SSH 配置文件")
+    optimize.add_argument("--service-port", type=between(1,65535), help="VPS 代理监听端口，用于匹配发送端重传")
+    optimize.add_argument("--interface", help="VPS 目标网卡，默认识别 IPv4 默认出口")
+    optimize.add_argument("--client-interface", help="HTTP 客户端出口；代理外网出口由已有代理控制")
+    optimize.add_argument("--resolve", action="append", default=[], help="固定对端 HOST:PORT:ADDRESS")
+    optimize.add_argument("--compare-initial", action="store_true", help="仅对比工具首次记录的介入前参数与当前配置")
+    optimize.add_argument("--rounds", type=between(3,10), default=3)
+    optimize.add_argument("--idle-seconds", type=between(1,300), help="空闲恢复等待，默认 20 秒；稳定性为 60 秒")
+    optimize.add_argument("--timeout", type=between(2,60), default=15)
+    optimize.add_argument("--deadline", type=between(30,7200), default=1800, help="整个试验的时限，默认 1800 秒")
+    optimize.add_argument("--budget-mib", type=between(1,1_048_576), default=512, help="所有候选和复核共享的总预算")
+    optimize.add_argument("--output", help="完整报告目录；确认执行后才创建，必须尚不存在")
+    optimize.add_argument("--persist", action="store_true", help="仅将通过独立复核的 TCP/GSO 方案持久化")
+    optimize_mode = optimize.add_mutually_exclusive_group()
+    optimize_mode.add_argument("--apply", action="store_true", help="预览后确认开始受控试验")
+    optimize_mode.add_argument("--dry-run", action="store_true", help="只读预览，默认行为")
+    optimize.add_argument("--yes", action="store_true", help="已确认的批处理，仍显示预览")
+    json_option(optimize)
+
     measure = sub.add_parser("bench", help="使用显式对端和总流量预算测速")
     measure.add_argument("--peer", required=True, help="自有 iperf3 对端 IP 或域名")
     measure.add_argument("--port", type=between(1, 65535), default=5201)
@@ -147,6 +171,7 @@ def parser():
     queue.add_argument("--shape-mbps", type=between(1, 100_000), help="显式出向整形速率")
     queue.add_argument("--enable-fq-pacing", action="store_true", help="原位启用现有 fq 的 pacing")
     design.add_argument("--gso-single-segment", action="store_true", help="将出向 GSO 上限设为每批一个分段")
+    design.add_argument("--gso-max-segs", type=between(1,65535), help="显式 GSO 分段上限，用于受控对照和恢复")
     design.add_argument("--shaper", choices=("cake", "tbf"), default="cake")
     json_option(design)
 
@@ -267,11 +292,11 @@ def show_plan(plan, reasons=False):
         changed = True
     gso = plan.get("gso")
     if gso:
-        print(f"  {gso['interface']}  GSO 分段上限 {gso['before']['max_segs']}  ->  1（运行时）")
+        print(f"  {gso['interface']}  GSO 分段上限 {gso['before']['max_segs']}  ->  {gso['after']['max_segs']}（运行时）")
         changed = True
     persistence = plan.get("gso_persistence")
     if persistence:
-        print(f"  {persistence['interface']}  GSO 分段上限 1（{persistence['backend']} 开机加载，绑定 MAC {persistence['address']}）")
+        print(f"  {persistence['interface']}  GSO 分段上限 {persistence.get('target_max_segs', 1)}（{persistence['backend']} 开机加载，绑定 MAC {persistence['address']}）")
         for path in persistence["after"]["files"]:
             print(f"    {path}")
         changed = True
@@ -390,6 +415,13 @@ def main(argv=None):
         if op == "inspect":
             report = inspect(host, args.peer, args.interface)
             (output_json if args.json else show_inspect)(report)
+        elif op == "optimize":
+            from net_tune_optimize import DEFAULT_URL, optimize
+            args.url = args.url or [DEFAULT_URL]
+            report = optimize(args)
+            if args.json:
+                output_json(report)
+            return 3 if report["state"] == "recovery_pending" else 2 if report["state"] in {"failed", "interrupted"} else 0
         elif op == "auto":
             if args.yes and not args.apply:
                 raise TuneError("--yes 需搭配 --apply")

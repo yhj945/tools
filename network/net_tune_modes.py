@@ -47,23 +47,25 @@ def evaluate_cases(workloads, mode):
                 or key in seen or not isinstance(pairs, list) or len(pairs) < 3):
             raise ValueError
         seen.add(key)
-        left, right, edges, speed, latency, firsts, loss = [], [], set(), [], [], [], []
+        left, right, edges, latency, firsts, loss = [], [], set(), [], [], []
         for pair in pairs:
             a, b = sample_value(pair["before"], size), sample_value(pair["after"], size)
             left.append(a); right.append(b)
             edges.update(s["edge"] for s in (pair["before"], pair["after"]) if s["complete"])
             if a[0] and b[0]:
                 latency.append(a[1] / b[1])
-                if a[2] and b[2]:
-                    speed.append((b[2] / b[1]) / (a[2] / a[1]))
                 if a[3] and b[3]:
                     firsts.append(a[3] / b[3])
                 if a[4] is not None and b[4] is not None:
                     loss.append((a[4], b[4]))
         before_ok, after_ok = sum(x[0] for x in left), sum(x[0] for x in right)
-        med_gain = median(latency) if latency else None
-        speed_gain = median(speed) if speed else None
-        ttfb_gain = median(firsts) if firsts else None
+        before_median, after_median = (median(x[1] for x in group) for group in (left, right))
+        med_gain = before_median / after_median
+        paired_gain = median(latency) if latency else None
+        rates = [[x[2] / x[1] for x in group if x[0] and x[2]] for group in (left, right)]
+        speed_gain = median(rates[1]) / median(rates[0]) if all(rates) else None
+        first_values = [[x[3] for x in group if x[0] and x[3]] for group in (left, right)]
+        ttfb_gain = median(first_values[0]) / median(first_values[1]) if all(first_values) else None
         # Failed samples retain their timeout duration in the tail, rather than disappearing.
         tail_before, tail_after = (quantile([x[1] for x in group], .95) for group in (left, right))
         loss_before, loss_after = (sum(x[i] for x in loss) for i in (0, 1))
@@ -84,6 +86,8 @@ def evaluate_cases(workloads, mode):
         tolerance = .10 if mode == "stability" else .05
         if med_gain is not None and med_gain < 1 / (1 + tolerance):
             reasons.append("中位完成耗时回退超出门槛")
+        if paired_gain is not None and paired_gain < 1 / (1 + tolerance):
+            reasons.append("配对完成耗时回退超出门槛")
         if speed_gain is not None and speed_gain < 1 - tolerance:
             reasons.append("吞吐回退超出门槛")
         if tail_after > tail_before * 1.10:
@@ -98,6 +102,8 @@ def evaluate_cases(workloads, mode):
         rows.append({"kind": kind, "target": case["target"], "bytes": size, "concurrency": streams,
                      "rounds": len(pairs), "before_completed": before_ok, "after_completed": after_ok,
                      "median_latency_gain": med_gain, "median_goodput_gain": speed_gain,
+                     "paired_latency_gain": paired_gain,
+                     "before_median_seconds": before_median, "after_median_seconds": after_median,
                      "median_ttfb_gain": ttfb_gain, "before_p95_seconds": tail_before,
                      "after_p95_seconds": tail_after, "retransmission_pairs": len(loss),
                      "before_retransmitted_bytes": loss_before if loss else None,
@@ -127,12 +133,14 @@ def evaluate_cases(workloads, mode):
     else:
         objective = geometric([latency_gain, tail_gain,
                                geometric(r["median_goodput_gain"] for r in rows if r["kind"] in {"download", "concurrent"})])
-    loss_before = sum(r["before_retransmitted_bytes"] or 0 for r in rows)
-    loss_after = sum(r["after_retransmitted_bytes"] or 0 for r in rows)
+    # Sparse observations are diagnostic only, never sufficient to declare a win.
+    loss_before = sum(r["before_retransmitted_bytes"] or 0 for r in rows if r["retransmission_pairs"] >= 3)
+    loss_after = sum(r["after_retransmitted_bytes"] or 0 for r in rows if r["retransmission_pairs"] >= 3)
     retrans_improved = loss_before > 0 and loss_after <= loss_before * .75
     improved = completion_gain > 0 or objective >= 1.05 or mode == "stability" and retrans_improved
     eligible = all(r["eligible"] for r in rows) and improved
     return {"mode": mode, "eligible": eligible, "objective_gain": objective,
+            "verdict": "improved" if eligible else "regression_or_insufficient_evidence" if not all(r["eligible"] for r in rows) else "no_material_gain",
             "completion_gain": completion_gain, "tail_gain": tail_gain,
             "reason": "完成率和保护指标通过，目标指标改善达标" if eligible else
             "保护指标未通过或目标改善不足 5%", "workloads": rows,
