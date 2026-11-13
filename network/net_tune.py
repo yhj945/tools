@@ -16,6 +16,8 @@ import sys
 sys.dont_write_bytecode = True
 
 from net_tune_auto import auto_plan
+from net_tune_modes import MODES
+from net_tune_web import WEB_FORMAT, compare_web, web_bench
 from net_tune_bench import MIB, bench, compare
 from net_tune_changes import CONFIG, Transactions, build_plan, valid_cc
 from net_tune_system import CC, DEFAULT_QDISC, PROBE_MSS_RANGE, ROUTE_MTU_RANGE, RCV, SND, LinuxHost, TuneError, inspect, load_object
@@ -74,6 +76,10 @@ def parser():
     evidence.add_argument("--peer", help="自有或已获授权的 iperf3 测速机")
     evidence.add_argument("--from-bench", metavar="FILE", help="同一主机的完整 bench 报告")
     evidence.add_argument("--from-results", metavar="FILE", help="同一主机和基线的配对实测记录")
+    evidence.add_argument("--web-url", action="append", help="业务 HTTP(S) 测试地址，可重复；仅采集基线")
+    automatic.add_argument("--mode", choices=MODES, default="balanced", help="优化重点，默认 balanced（均衡）")
+    automatic.add_argument("--proxy", help="业务测试的 HTTP/SOCKS5 代理")
+    automatic.add_argument("--resolve", action="append", default=[], help="HOST:PORT:ADDRESS，可重复")
     automatic.add_argument("--port", type=between(1, 65535), default=5201)
     automatic.add_argument("--rate-mbps", type=between(1, 100_000), default=20, help="测速目标速率，默认 20 Mbps")
     automatic.add_argument("--budget-mib", type=between(1, 1_048_576), default=128, help="测速总预算，默认 128 MiB")
@@ -81,6 +87,7 @@ def parser():
     mode.add_argument("--apply", action="store_true", help="预览后确认应用")
     mode.add_argument("--dry-run", action="store_true", help="仅预览，省略主动测速")
     automatic.add_argument("--yes", action="store_true", help="搭配 --apply，用于已确认的批处理")
+    automatic.add_argument("--persist", action="store_true", help="将优选的 TCP 和 GSO 参数加入开机加载计划")
     json_option(automatic)
 
     measure = sub.add_parser("bench", help="使用显式对端和总流量预算测速")
@@ -108,7 +115,21 @@ def parser():
     comparison = sub.add_parser("compare", help="对比同路径、同测试矩阵的报告")
     comparison.add_argument("before")
     comparison.add_argument("after")
+    comparison.add_argument("--mode", choices=MODES, default="balanced", help="HTTP 业务报告的比较重点")
     json_option(comparison)
+
+    web = sub.add_parser("web", help="按预算测小请求、下载、并发和空闲后恢复；不修改配置")
+    web.add_argument("--url", action="append", required=True, help="HTTP(S) 地址；可用 {bytes} 代入负载大小")
+    web.add_argument("--mode", choices=MODES, default="balanced")
+    web.add_argument("--proxy", help="HTTP/SOCKS5 代理，例如 socks5h://127.0.0.1:7890")
+    web.add_argument("--resolve", action="append", default=[], help="HOST:PORT:ADDRESS，可重复")
+    web.add_argument("--interface", help="HTTP 连接出口；回环代理应在代理程序中绑定出口")
+    web.add_argument("--rounds", type=between(1,20), default=3)
+    web.add_argument("--budget-mib", type=between(1,1_048_576), default=128)
+    web.add_argument("--timeout", type=between(2,60), default=15)
+    web.add_argument("--deadline", type=between(10,3600), default=600)
+    web.add_argument("--idle-seconds", type=between(1,300), help="两次请求的启动间隔；默认 20 秒，稳定性模式 60 秒")
+    web.add_argument("--dry-run", action="store_true", help="只展示矩阵和预算，不访问网络")
 
     design = sub.add_parser("plan", help="离线生成调优计划")
     design.add_argument("--profile", choices=("vless",), help="生成 VLESS 下载调优计划")
@@ -117,9 +138,10 @@ def parser():
     design.add_argument("--bandwidth-mbps", type=between(0.01, 100_000, float), help="业务单流带宽估算")
     design.add_argument("--rtt-ms", type=between(0.001, 10_000, float), help="业务路径实测空载 RTT")
     design.add_argument("--mtu-probe-mss", type=between(*PROBE_MSS_RANGE), help="启用 TCP MTU 探测并设置起始 MSS（字节）")
+    design.add_argument("--mtu-probing", type=between(0,2), help="MTU 探测：0 关闭、1 按需、2 始终；指定 MSS 时默认 2")
     design.add_argument("--initcwnd", type=between(1, 65535), help="IPv4 主表默认路由的初始拥塞窗口（报文段）")
     design.add_argument("--route-mtu", type=between(*ROUTE_MTU_RANGE), help="IPv4 主表默认路由的 MTU（字节）")
-    design.add_argument("--persist", action="store_true", help="同时写入启动 sysctl 配置的计划")
+    design.add_argument("--persist", action="store_true", help="同时生成 TCP 参数和 GSO 的开机加载计划")
     design.add_argument("--interface", help="目标网卡，默认使用报告的出口")
     queue = design.add_mutually_exclusive_group()
     queue.add_argument("--shape-mbps", type=between(1, 100_000), help="显式出向整形速率")
@@ -152,20 +174,35 @@ def show_auto(result):
     queues = "、".join(system["qdiscs"]) or "未知"
     print(f"出口 {system['interface'] or '待测速确认'} | 拥塞控制 {system['cc'] or '未知'} | 队列 {queues}")
     decision = result["selection"]
+    print(f"优化重点 {MODES[result.get('mode','balanced')]}")
     print(decision["reason"])
-    if decision["method"] == "paired_results":
+    if decision["method"] in {"paired_results", "iperf3"}:
+        print("当前为传输/下载证据，尚未验证日常访问和空闲后恢复。")
+    if decision["method"] in {"paired_results", "paired_business"}:
         for row in decision["candidates"]:
             print(f"  {row['name']}  {'通过' if row['eligible'] else '未通过'}")
         if decision["selected"]:
             print(f"选中 {decision['selected']}")
     report = result["benchmark"]
-    if report and report.get("dry_run"):
+    if report and report.get("format") == WEB_FORMAT:
+        print(f"HTTP 业务请求预算 {report['budget_bytes']/MIB:.0f} MiB，"
+              f"完整矩阵预留 {report['planned_reserved_bytes']/MIB:.2f} MiB，已计入 {report['charged_bytes']/MIB:.2f} MiB")
+        for row in report.get("summary", []):
+            latency = f"{row['p95_seconds']:.3f} 秒" if row['p95_seconds'] is not None else "无样本"
+            print(f"  {row['kind']} 完成 {row['completed']}/{row['samples']}，p95 {latency}")
+            if row["failed"]:
+                print(f"    HTTP 拒绝 {row['http_response_failures']}，重定向 {row['http_redirects']}，"
+                      f"体积上限 {row['size_limit_failures']}，连接/传输错误 {row['transport_failures']}")
+    elif report and report.get("dry_run"):
         print(f"计划 {report['planned_samples']} 轮，预算 {report['budget_bytes'] / MIB:.0f} MiB，"
               f"失败上界 {report['worst_case_bytes'] / MIB:.1f} MiB")
     elif report and "charged_bytes" in report:
         print(f"已计入测速预算 {report['charged_bytes'] / MIB:.2f} MiB")
     if result["plan"] is None and report is None and decision["method"] == "local":
-        print("有测速机时运行 net_tune auto --peer 测速机地址。确认方案后可加 --apply。")
+        if result.get("mode") in {"daily", "stability", "concurrency"}:
+            print(f"业务基线：net_tune auto --mode {result['mode']} --web-url HTTP(S)地址；同路径配对后再优选。")
+        else:
+            print("有测速机时运行 net_tune auto --peer 测速机地址。确认方案后可加 --apply。")
 
 
 def show_inspect(report):
@@ -232,6 +269,12 @@ def show_plan(plan, reasons=False):
     if gso:
         print(f"  {gso['interface']}  GSO 分段上限 {gso['before']['max_segs']}  ->  1（运行时）")
         changed = True
+    persistence = plan.get("gso_persistence")
+    if persistence:
+        print(f"  {persistence['interface']}  GSO 分段上限 1（{persistence['backend']} 开机加载，绑定 MAC {persistence['address']}）")
+        for path in persistence["after"]["files"]:
+            print(f"    {path}")
+        changed = True
     default_route = plan.get("default_route")
     if default_route:
         show_route_change(default_route["before"], default_route["after"])
@@ -268,6 +311,8 @@ def show_rollback(journal, scope):
             print(f"  {step['interface']}  GSO 分段上限 1  ->  {step['before']['max_segs']}")
         elif kind == "default_route":
             show_route_change(step["after"], step["before"])
+        elif kind == "gso_persistence":
+            print(f"  {step['interface']}  恢复 GSO 启动文件和服务状态；恢复本次启动记录的 GSO 上限")
         else:
             action = "恢复原文件内容" if step["before"] is not None else "移除脚本生成的文件"
             print(f"  /etc/sysctl.d/{CONFIG}  {action}")
@@ -315,6 +360,10 @@ def status_data(host, transactions):
         records, unreadable = [], True
     return {"sysctl": {key: host.sysctl(key) for key in (CC, RCV, SND, DEFAULT_QDISC)},
             "boot_backend": host.backend(), "managed_config": transactions.config_content(),
+            "gso_startup": [{"interface": step["interface"], "backend": step["backend"],
+                             **transactions.gso_persistence.state(step)}
+                            for row in records if row["state"] == "applied" and transactions.same_scope(row)
+                            for step in row["steps"] if step["type"] == "gso_persistence"],
             "history_needs_root": unreadable,
             "transactions": [{"id": row["id"], "created": row["created"], "state": row["state"],
                               "attempted": row["attempted"], "errors": row.get("recovery_errors", [])}
@@ -369,8 +418,27 @@ def main(argv=None):
                 return 130
             return 0 if args.dry_run or report["complete"] else 2
         elif op == "compare":
-            rows = compare(load_object(args.before), load_object(args.after))
-            (output_json if args.json else show_compare)(rows)
+            before, after = load_object(args.before), load_object(args.after)
+            if before.get("format") == WEB_FORMAT:
+                result = compare_web(before, after, args.mode)
+                if args.json:
+                    output_json(result)
+                else:
+                    print(f"优化重点 {MODES[args.mode]}：{result['reason']}")
+                    for row in result["workloads"]:
+                        print(f"  {row['kind']} p95 {row['before_p95_seconds']:.3f} → {row['after_p95_seconds']:.3f} 秒；"
+                              f"完成 {row['before_completed']} → {row['after_completed']} / {row['rounds']}")
+                        for reason in row["reasons"]:
+                            print(f"    {reason}")
+            else:
+                rows = compare(before, after)
+                (output_json if args.json else show_compare)(rows)
+        elif op == "web":
+            report = web_bench(host, args)
+            output_json(report)
+            if report.get("interrupted"):
+                return 130
+            return 0 if args.dry_run or report["complete"] else 2
         elif op == "plan":
             report = load_object(args.from_bench) if args.from_bench else None
             plan = build_plan(host, transactions, args, report)
@@ -408,6 +476,9 @@ def main(argv=None):
                     print(f"{key} = {value or '不可用'}")
                 if data["managed_config"]:
                     print(data["managed_config"], end="")
+                for row in data["gso_startup"]:
+                    print(f"GSO 开机加载 {row['interface']} ({row['backend']}): "
+                          f"{'已启用' if row['enabled'] else '未启用'}，{'运行中' if row['active'] else '未运行'}")
                 for row in data["transactions"]:
                     print(f"{row['id']}  {row['created']}  {row['state']}")
                     for error in row["errors"]:

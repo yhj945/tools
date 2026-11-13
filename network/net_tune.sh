@@ -2,7 +2,7 @@
 set -euo pipefail
 
 archive_url=https://codeload.github.com/yhj945/tools/zip/refs/heads/main
-modules=(net_tune.py net_tune_auto.py net_tune_bench.py net_tune_changes.py net_tune_system.py)
+modules=(net_tune.py net_tune_auto.py net_tune_bench.py net_tune_changes.py net_tune_gso.py net_tune_modes.py net_tune_system.py net_tune_web.py)
 
 fail() {
     printf '错误 %s\n' "$*" >&2
@@ -33,12 +33,9 @@ find_missing() {
     ip -j -V >/dev/null 2>&1 || missing+=(ip)
     tc -j -V >/dev/null 2>&1 || missing+=(tc)
     local tool
-    for tool in ss iperf3 ping stdbuf; do
+    for tool in ss iperf3 ping stdbuf curl; do
         command -v "$tool" >/dev/null || missing+=("$tool")
     done
-    if [[ -z $source_dir ]] && ! command -v curl >/dev/null; then
-        missing+=(curl)
-    fi
 }
 
 install_dependencies() {

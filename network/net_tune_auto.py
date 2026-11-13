@@ -8,11 +8,14 @@ from statistics import median
 
 from net_tune_bench import bench, number
 from net_tune_changes import build_plan, valid_cc
+from net_tune_modes import evaluate_cases
+from net_tune_web import web_bench
 from net_tune_system import (AVAILABLE_CC, BASE_MSS, CC, DEFAULT_QDISC, MTU_PROBING,
                              PROBE_MSS_RANGE, RCV, ROUTE_MTU_RANGE, SND, TuneError,
                              inspect, ip_address, load_object)
 
 RESULTS_FORMAT = "net-tune-results-v1"
+RESULTS_FORMAT_V2 = "net-tune-results-v2"
 BASELINE_KEYS = (CC, RCV, SND, DEFAULT_QDISC, BASE_MSS, MTU_PROBING,
                  "net.ipv4.tcp_slow_start_after_idle", "net.ipv4.tcp_rto_min_us")
 REGRESSION_TOLERANCE = .05
@@ -88,7 +91,7 @@ def evaluate_workload(workload):
 
 
 def candidate_settings(values):
-    ranges = {"initcwnd": (1, 65535), "route_mtu": ROUTE_MTU_RANGE, "mtu_probe_mss": PROBE_MSS_RANGE}
+    ranges = {"initcwnd": (1, 65535), "route_mtu": ROUTE_MTU_RANGE, "mtu_probe_mss": PROBE_MSS_RANGE, "mtu_probing": (0, 2)}
     boolean = ("gso_single_segment", "enable_fq_pacing")
     if not isinstance(values, dict) or not values or set(values) - {"cc", "profile", *ranges, *boolean}:
         raise ValueError
@@ -104,9 +107,13 @@ def candidate_settings(values):
     return values
 
 
-def choose_results(host, store, data, parse):
+def choose_results(host, store, data, parse, persist=False, mode="balanced"):
+    if data.get("format") == RESULTS_FORMAT_V2:
+        return choose_business_results(host, store, data, parse, persist, mode)
     if data.get("format") != RESULTS_FORMAT:
         raise TuneError("需要 net_tune 的配对实测记录")
+    if mode not in {"balanced", "download"}:
+        raise TuneError("旧版记录只有下载证据；该模式需要四类业务负载的 net-tune-results-v2 配对记录")
     try:
         interface, peer = check_results_baseline(host, data)
         candidates, ranked, names = [], [], set()
@@ -131,8 +138,11 @@ def choose_results(host, store, data, parse):
                 continue
             if {"initcwnd", "route_mtu"} & settings.keys() and "route" not in data["baseline"]:
                 raise ValueError
-            design = parse(["plan", "--interface", interface])
+            design = parse(["plan"])
+            if any(settings.get(k) for k in ("profile", "gso_single_segment", "enable_fq_pacing", "initcwnd", "route_mtu")):
+                design.interface = interface
             vars(design).update(settings)
+            design.persist = persist
             try:
                 plan = build_plan(host, store, design)
                 store.check_current(plan)
@@ -150,17 +160,72 @@ def choose_results(host, store, data, parse):
         raise TuneError("配对实测记录内容不完整，或候选的测试矩阵不同") from exc
     return peer, interface, (selected[2] if selected else None), {
         "method": "paired_results", "selected": selected[1] if selected else None,
+        "coverage": ["download"],
         "candidates": candidates, "reason": "按完成率、吞吐和重传比较同路径配对样本" if selected
         else "当前实测记录没有通过筛选的候选",
     }
+
+
+def choose_business_results(host, store, data, parse, persist, mode):
+    try:
+        interface, peer = check_results_baseline(host, data)
+        candidates, ranked, names, matrix = [], [], set(), None
+        for item in data["candidates"]:
+            name, settings = item["name"], candidate_settings(item["settings"])
+            if not isinstance(name, str) or not name or name in names:
+                raise ValueError
+            names.add(name)
+            case_matrix = sorted((c["kind"], c["target"], c["bytes"], c["concurrency"], len(c["pairs"])) for c in item["workloads"])
+            if matrix is not None and matrix != case_matrix:
+                raise ValueError
+            matrix = case_matrix
+            result = {"name": name, **evaluate_cases(item["workloads"], mode)}
+            candidates.append(result)
+            if not result["eligible"]:
+                continue
+            if {"initcwnd", "route_mtu"} & settings.keys() and "route" not in data["baseline"]:
+                raise ValueError
+            design = parse(["plan"])
+            if any(settings.get(k) for k in ("profile", "gso_single_segment", "enable_fq_pacing", "initcwnd", "route_mtu")):
+                design.interface = interface
+            vars(design).update(settings, persist=persist)
+            try:
+                plan = build_plan(host, store, design)
+                store.check_current(plan)
+            except TuneError as exc:
+                result.update(eligible=False, reason=str(exc))
+                continue
+            ranked.append((tuple(result["rank"]), name, plan))
+        if not candidates:
+            raise ValueError
+        selected = max(ranked, key=lambda row: row[0]) if ranked else None
+    except (KeyError, TypeError, ValueError, AttributeError, OverflowError) as exc:
+        raise TuneError("业务配对记录不完整、数值无效或候选测试矩阵不同") from exc
+    return peer, interface, selected[2] if selected else None, {
+        "method": "paired_business", "mode": mode, "selected": selected[1] if selected else None,
+        "candidates": candidates, "reason": "按业务目标选出通过保护指标的候选" if selected else
+        "没有候选同时满足目标改善和完成率、吞吐、尾延时、重传保护，保留当前配置"}
 
 
 def auto_plan(host, store, args, parse):
     plan = benchmark = peer = interface = None
     selection = {"method": "local", "selected": None, "reason": "已识别本机配置，需要同路径测速才能优选"}
     if args.from_results:
-        peer, interface, plan, selection = choose_results(host, store, load_object(args.from_results), parse)
+        peer, interface, plan, selection = choose_results(host, store, load_object(args.from_results), parse, args.persist, args.mode)
+    elif args.web_url:
+        measure = parse(["web", "--mode", args.mode, "--budget-mib", str(args.budget_mib)]
+                        + [v for u in args.web_url for v in ("--url", u)]
+                        + (["--proxy", args.proxy] if args.proxy else [])
+                        + [v for r in args.resolve for v in ("--resolve", r)]
+                        + (["--dry-run"] if args.dry_run else []))
+        benchmark = web_bench(host, measure)
+        selection = {"method": "web_baseline", "selected": None,
+                     "reason": "业务测试预览" if args.dry_run else
+                     "已采集业务基线；单份报告不能证明候选改善，需用同路径配对记录选优" if benchmark["complete"] else
+                     "业务测试未完成: " + str(benchmark["stop_reason"])}
     elif args.peer or args.from_bench:
+        if args.mode not in {"balanced", "download"}:
+            raise TuneError("该模式需要业务配对证据；先使用 web 或 auto --web-url 测实际业务路径")
         if args.from_bench:
             benchmark = load_object(args.from_bench)
         else:
@@ -177,6 +242,7 @@ def auto_plan(host, store, args, parse):
             benchmark = bench(host, measure)
         if benchmark.get("complete"):
             design = parse(["plan", "--cc", "auto"])
+            design.persist = args.persist
             plan = build_plan(host, store, design, benchmark)
             store.check_current(plan)
             peer, interface = benchmark["peer"], benchmark["route"]["dev"]
@@ -192,7 +258,7 @@ def auto_plan(host, store, args, parse):
             if len(devices) == 1:
                 interface = next(iter(devices))
                 break
-    return {"system": {"os": report["os"], "kernel": report["kernel"], "cpu_count": report["cpu_count"],
+    return {"mode": args.mode, "system": {"os": report["os"], "kernel": report["kernel"], "cpu_count": report["cpu_count"],
                        "memory_bytes": report["memory"]["effective_limit_bytes"], "interface": interface,
                        "cc": report["sysctl"].get(CC), "available_cc": report["sysctl"].get(AVAILABLE_CC),
                        "qdiscs": [row["kind"] for row in report["qdiscs"].get(interface, [])]},

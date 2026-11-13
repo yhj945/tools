@@ -17,6 +17,7 @@ import tempfile
 import uuid
 
 from net_tune_bench import RETRANS_BYTES_PER_MIB, number, utc_now, validated_report
+from net_tune_gso import GSOPersistence
 from net_tune_system import (AUTOTUNE, BASE_MSS, CC, MTU_PROBING, PROBE_MSS_RANGE, QDISC_HANDLE, ROUTE_MTU_RANGE, RCV, SND,
                              WRITABLE_KEYS, TuneError, load_object)
 
@@ -24,6 +25,7 @@ PLAN = "net-tune-plan-v1"
 PLAN_V2 = "net-tune-plan-v2"
 PLAN_V3 = "net-tune-plan-v3"
 PLAN_V4 = "net-tune-plan-v4"
+PLAN_V5 = "net-tune-plan-v5"
 HEADER = "# Managed by net_tune. Edit with a new plan.\n"
 CONFIG = "90-net-tune.conf"
 CC_PATTERN = r"[a-z0-9_]{1,15}"
@@ -32,6 +34,7 @@ STATE_FORMAT_V2 = "net-tune-transaction-v2"
 STATE_FORMAT_V3 = "net-tune-transaction-v3"
 STATE_FORMATS = {
     PLAN: STATE_FORMAT, PLAN_V2: STATE_FORMAT_V2, PLAN_V3: STATE_FORMAT_V3, PLAN_V4: "net-tune-transaction-v4",
+    PLAN_V5: "net-tune-transaction-v5",
 }
 
 
@@ -165,10 +168,10 @@ def build_plan(host, store, args, report=None) -> dict:
         hint = shaping_hint(report)
         if hint:
             notes.append(hint)
-    cc, probe_mss = args.cc, args.mtu_probe_mss
+    cc, probe_mss, probe_mode = args.cc, args.mtu_probe_mss, args.mtu_probing
     pacing, single_gso = args.enable_fq_pacing, args.gso_single_segment
     if args.profile == "vless":
-        if args.shape_mbps or cc not in (None, "bbr") or probe_mss not in (None, 1290):
+        if args.shape_mbps or cc not in (None, "bbr") or probe_mss not in (None, 1290) or probe_mode not in (None, 2):
             raise TuneError("VLESS 预设使用 BBR、fq pacing 和 1290 字节起始 MSS，请移除冲突参数")
         cc, probe_mss, pacing, single_gso = "bbr", 1290, True, True
     current_cc = host.sysctl(CC)
@@ -218,14 +221,16 @@ def build_plan(host, store, args, report=None) -> dict:
     if report and not args.rtt_ms and rtt:
         notes.append("缓冲区建议使用本报告对端的空载 RTT，跨地区业务可用 --rtt-ms 指定实测值")
 
-    if probe_mss is not None:
-        for key, after in ((BASE_MSS, str(probe_mss)), (MTU_PROBING, "2")):
+    if probe_mss is not None or probe_mode is not None:
+        values = ([(BASE_MSS, str(probe_mss))] if probe_mss is not None else [])
+        values.append((MTU_PROBING, str(probe_mode if probe_mode is not None else 2)))
+        for key, after in values:
             before = host.sysctl(key)
             if not valid_value(key, before):
                 raise TuneError(f"无法读取 {key} 的可回滚运行值")
             if before != after or args.persist:
                 changes.append({"key": key, "before": before, "after": after,
-                                "reason": "从指定的 MSS 开始执行 TCP 路径 MTU 探测"})
+                                "reason": "显式选择 TCP 路径 MTU 探测策略和起始 MSS"})
 
     shape = gso = None
     queue_requested = args.shape_mbps or pacing
@@ -296,15 +301,18 @@ def build_plan(host, store, args, report=None) -> dict:
         store.check_boot_config(backend, config_values(after))
         if before != after:
             config = {"before": before, "after": after, "backend": backend}
-    if not any(change["before"] != change["after"] for change in changes) and not (shape or gso or default_route or config):
+    gso_persistence = store.gso_persistence.plan(interface, host.gso_state(interface)) if single_gso and args.persist else None
+    if not any(change["before"] != change["after"] for change in changes) and not (shape or gso or default_route or config or gso_persistence):
         notes.append("当前证据没有产生参数变更")
-    plan_format = plan_version(default_route, gso)
+    plan_format = plan_version(default_route, gso, gso_persistence)
     plan = {"format": plan_format, "created": utc_now(), "scope": scope, "sysctl": changes,
             "shape": shape, "config": config, "notes": notes}
     if gso:
         plan["gso"] = gso
     if default_route:
         plan["default_route"] = default_route
+    if gso_persistence:
+        plan["gso_persistence"] = gso_persistence
     return plan
 
 
@@ -317,7 +325,9 @@ def valid_path(path, interface: str) -> bool:
     )
 
 
-def plan_version(default_route, gso) -> str:
+def plan_version(default_route, gso, gso_persistence=None) -> str:
+    if gso_persistence is not None:
+        return PLAN_V5
     if default_route is not None:
         return PLAN_V4 if "mtu" in default_route["before"] else PLAN_V3
     return PLAN_V2 if gso is not None else PLAN
@@ -353,7 +363,8 @@ def validate_plan(plan: dict) -> None:
     try:
         gso = plan.get("gso")
         default_route = plan.get("default_route")
-        expected_format = plan_version(default_route, gso)
+        gso_persistence = plan.get("gso_persistence")
+        expected_format = plan_version(default_route, gso, gso_persistence)
         if plan["format"] != expected_format or not isinstance(plan["scope"], dict):
             raise ValueError
         seen = set()
@@ -362,8 +373,6 @@ def validate_plan(plan: dict) -> None:
             if key in seen or not valid_value(key, before) or not valid_value(key, after):
                 raise ValueError
             if key == BASE_MSS and not PROBE_MSS_RANGE[0] <= int(after) <= PROBE_MSS_RANGE[1]:
-                raise ValueError
-            if key == MTU_PROBING and after != "2":
                 raise ValueError
             if key in (RCV, SND):
                 left, right = before.split(), after.split()
@@ -394,6 +403,14 @@ def validate_plan(plan: dict) -> None:
                 raise ValueError
         if default_route is not None:
             validate_default_route(default_route)
+        if gso_persistence is not None:
+            GSOPersistence(None).validate(gso_persistence)
+            if gso is None:
+                if gso_persistence["max_segs"] != 1:
+                    raise ValueError
+            elif (gso["interface"] != gso_persistence["interface"]
+                  or any(gso["before"][key] != gso_persistence[key] for key in ("ifindex", "address", "max_segs"))):
+                raise ValueError
         config = plan["config"]
         if config is not None:
             if (not plan["sysctl"] or config["backend"] not in ("systemd", "openrc")
@@ -438,6 +455,7 @@ class Transactions:
             Path("/usr/lib/sysctl.d"), Path("/lib/sysctl.d"),
         )
         self.config_path = self.config_dirs[0] / CONFIG
+        self.gso_persistence = GSOPersistence(host)
 
     def config_content(self):
         try:
@@ -546,6 +564,8 @@ class Transactions:
                 self.host.can_attach(interface, current)
         if gso and self.host.gso_state(gso["interface"]) != gso["before"]:
             raise TuneError(f"{gso['interface']} 的 GSO 上限或网卡身份已变化，请重新生成计划")
+        if plan.get("gso_persistence"):
+            self.gso_persistence.check(plan["gso_persistence"])
         default_route = plan.get("default_route")
         if default_route:
             self.check_default_route(default_route)
@@ -566,7 +586,7 @@ class Transactions:
         if current["boot"] == original["boot"]:
             return current["netns"] == original["netns"]
         return (journal["initial_netns"] and self.host.in_init_netns()
-                and any(step["type"] == "config"
+                and any(step["type"] in {"config", "gso_persistence"}
                         for step in journal["steps"][:journal["attempted"]]))
 
     def pending(self, records: list[dict]):
@@ -587,6 +607,9 @@ class Transactions:
             steps.append({"type": "default_route", **default_route})
         if config:
             steps.append({"type": "config", **config})
+        persistence = plan.get("gso_persistence")
+        if persistence:
+            steps.append({"type": "gso_persistence", **persistence})
         if not steps:
             return None
         with self.lock():
@@ -606,6 +629,19 @@ class Transactions:
                               for step in record["steps"] if step["type"] == "config"), None)
                 if (owner["after"] if owner else None) != config["before"]:
                     raise TuneError(f"{CONFIG} 缺少匹配的管理记录，请保留原文件")
+            if persistence:
+                for path, content in persistence["before"]["files"].items():
+                    owner = next((step for record in records if record["state"] == "applied"
+                                  and self.same_scope(record) for step in record["steps"]
+                                  if step["type"] == "gso_persistence" and path in step["after"]["files"]), None)
+                    if (owner["after"]["files"][path] if owner else None) != content:
+                        raise TuneError(f"GSO 启动文件缺少匹配的管理记录，请保留原文件: {path}")
+                if persistence["before"]["enabled"] or persistence["before"]["active"]:
+                    owner = next((step for record in records if record["state"] == "applied"
+                                  and self.same_scope(record) for step in record["steps"]
+                                  if step["type"] == "gso_persistence" and step["interface"] == persistence["interface"]), None)
+                    if not owner:
+                        raise TuneError("GSO 启动服务缺少匹配的管理记录")
             sequence = int(records[0]["id"].split("-", 1)[0]) + 1 if records else 1
             journal = {
                 "format": STATE_FORMATS[plan["format"]],
@@ -655,6 +691,8 @@ class Transactions:
             if self.config_content() != step["before"]:
                 raise TuneError(f"{CONFIG} 在应用期间发生变化")
             self.check_boot_config(step["backend"], config_values(step["after"]))
+        if kind == "gso_persistence":
+            self.gso_persistence.check(step, runtime_applied=True)
 
     def write_step(self, step: dict) -> None:
         kind = step["type"]
@@ -682,6 +720,8 @@ class Transactions:
                 raise TuneError(f"{interface} 的 GSO 上限读回不匹配")
         elif kind == "default_route":
             self.host.set_default_ipv4_route(step["after"])
+        elif kind == "gso_persistence":
+            self.gso_persistence.apply(step, replace_file)
         else:
             replace_file(self.config_path, step["after"], 0o644)
             if self.config_content() != step["after"]:
@@ -773,6 +813,8 @@ class Transactions:
             replace_file(self.config_path, step["before"], 0o644)
             if self.config_content() != step["before"]:
                 raise TuneError(f"{CONFIG} 回滚读回不匹配")
+        elif kind == "gso_persistence":
+            self.gso_persistence.restore(step, replace_file)
         else:
             interface = step["interface"]
             current = self.host.queue_state(interface)

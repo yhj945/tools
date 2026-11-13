@@ -146,7 +146,7 @@ class CliTests(unittest.TestCase):
             for source in NETWORK.glob("net_tune*.py"):
                 shutil.copy2(source, root)
             before = {path.name: path.read_bytes() for path in root.iterdir()}
-            for args in ([], ["auto"], ["auto", "--peer", "unused.invalid", "--dry-run"],
+            for args in ([], ["auto"], ["auto", "--persist", "--dry-run"], ["auto", "--peer", "unused.invalid", "--dry-run"],
                          ["bench", "--peer", "unused.invalid", "--rates-mbps", "5", "--dry-run"]):
                 result = subprocess.run([sys.executable, str(root / "net_tune.py"), *args],
                                         capture_output=True, text=True, timeout=10)
